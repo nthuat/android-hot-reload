@@ -58,12 +58,18 @@ Applied to the app's build. Debug variant only: adds the `runtime` library depen
 The daemon loop: file watcher → Gradle tooling API incremental compile of the changed module → content-hash diff of class output dirs against a baseline captured after each cycle → `d8` changed classes into `patch.dex` → `adb push` → socket message to agent → print result.
 
 ### agent (C++ JVMTI, arm64 + x86_64)
-Attached once via `adb shell am attach-agent`. Listens on a LocalServerSocket (reached via `adb forward`). Receives dex, calls `RedefineClasses` for body-compatible changes, reports per-class success/failure back to the CLI.
+Attached once via `adb shell am attach-agent`. Load path matters: SELinux blocks debuggable apps loading agents from `/data/local/tmp` on many Android versions, so the CLI pushes the .so to `/data/local/tmp` then copies it into the app's `code_cache` dir via `run-as` (same trick Android Studio uses); patch dex files travel the same route. The agent listens on an abstract-namespace local socket (reached via `adb forward`). It receives a class descriptor + dex path per changed class, calls `RedefineClasses` with the dex bytes, and reports per-class success/failure back to the CLI. After a successful redefine it signals the runtime lib directly — an in-process JNI call to `ComposeInvalidator.reload()` — no extra IPC.
 
 ### runtime (Android library, debug only)
-After successful redefinition, triggers recomposition via Compose runtime's `invalidateGroupsWithKey` internal API. Opt-in fallback: full `Activity.recreate()`.
+`ComposeInvalidator.reload()`, called by the agent via JNI, triggers whole-app recomposition through Compose runtime's internal `HotReloader` object (invoked reflectively — the same hook JetBrains desktop hot reload uses). Whole-app recompose costs milliseconds and avoids computing compiler-generated group keys entirely; per-group precision is a later optimization, not a v1 requirement. If reflection fails (Compose version shifted the internal API), fallback is `Activity.recreate()` on the tracked foreground activity.
 
-## Data Flow — One Reload Cycle
+## Data Flow
+
+### Cycle 0 — Bootstrap
+
+Before the first reload: gradle-plugin applied to the app, `assembleDebug` built and installed, app launched by the user. The CLI then: captures the class-output baseline (content hashes across all modules' kotlin-classes dirs), pushes the agent .so and copies it into `code_cache` via `run-as`, attaches it with `am attach-agent`, sets up `adb forward` to the agent's socket, and pings. Only then does watching begin.
+
+### One Reload Cycle
 
 1. Save `.kt` → watcher debounce 100 ms
 2. CLI: Gradle tooling API `:module:compileDebugKotlin` (incremental — only the changed module compiles)
@@ -79,7 +85,7 @@ Reliability is the core goal: the tool must never leave the app in silently-wron
 
 - **Incompatible change** (new/removed method, field, changed signature, new class): JVMTI returns an error → CLI reports exactly what changed and why it's unsupported, offers one-key full rebuild + reinstall.
 - **Compile error:** Gradle output surfaced as-is; app untouched; watcher keeps running.
-- **Compose group mismatch** (an edit that shifts group keys risks a recompose crash): conservative rule — if a redefined class's composable structure changed (detected via synthetic-member / group-key diff), fall back to `Activity.recreate()` instead of group invalidation.
+- **Recompose failure** (internal `HotReloader` reflection fails or invalidation throws): fall back to `Activity.recreate()` on the tracked foreground activity — state loss over wrong state.
 - **Device disconnect / dead agent:** CLI health-check ping before each push; one automatic reattach attempt, then surface to user.
 - **Multi-device:** v1 targets one device — first found, or `--serial`.
 
@@ -91,7 +97,8 @@ Reliability is the core goal: the tool must never leave the app in silently-wron
 
 ## Risks
 
-- `invalidateGroupsWithKey` is a Compose runtime internal API — may shift across Compose versions. Mitigation: version-check in runtime lib, `Activity.recreate()` fallback always available.
+- `HotReloader` is a Compose runtime internal API — may shift across Compose versions. Mitigation: reflective access with capability check at attach time, `Activity.recreate()` fallback always available.
+- Method-body edits that introduce **new lambdas** compile to new synthetic classes on some Kotlin configurations (invokedynamic desugaring) — those surface as incompatible changes in v1 and route to the rebuild path.
 - JVMTI behavior varies slightly across OEM ART builds. Mitigation: agent reports capability errors explicitly; CI covers stock emulator images for a range of API levels.
 - Gradle tooling API compile latency on very large projects may exceed comfortable reload time. Mitigation: measure first; embedded compiler fast-path is a known later upgrade, not a v1 requirement.
 
