@@ -2,7 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
-    // enable in Task 8: id("dev.hotreload")
+    id("dev.hotreload")
 }
 android {
     namespace = "dev.hotreload.sample"
