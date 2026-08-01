@@ -40,4 +40,6 @@ class Adb(
     }
 
     fun appDataDir(pkg: String): String = "/data/data/$pkg"
+
+    fun getprop(name: String): String = adb("shell", "getprop", name).stdout.trim()
 }

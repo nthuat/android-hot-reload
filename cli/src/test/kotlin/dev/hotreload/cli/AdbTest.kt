@@ -58,4 +58,14 @@ class AdbTest {
         assertTrue(Adb("adb", null, FakeRunner(ProcessResult(0, "12345\n", ""))).isAppRunning("p"))
         assertFalse(Adb("adb", null, FakeRunner(ProcessResult(1, "", ""))).isAppRunning("p"))
     }
+
+    @Test
+    fun `getprop runs shell getprop and trims output`() {
+        val fake = FakeRunner(ProcessResult(0, "arm64-v8a\n", ""))
+        assertEquals("arm64-v8a", Adb("adb", "emulator-5554", fake).getprop("ro.product.cpu.abi"))
+        assertEquals(
+            listOf("adb", "-s", "emulator-5554", "shell", "getprop", "ro.product.cpu.abi"),
+            fake.calls.single(),
+        )
+    }
 }
