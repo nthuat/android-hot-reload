@@ -30,13 +30,31 @@ class HotReloadPlugin : Plugin<Project> {
 // compile task it attaches to, so an extra -P for the same option collides. The only supported
 // way to set it is this compose-compiler-gradle-plugin project extension, which is project-wide
 // (applies to release compiles too, not just debug) — Kotlin 2.1.0's extension has no per-
-// Android-build-type granularity. Cost is limited to a few extra small annotated classes in
-// release output; the runtime dependency that reads them is debugImplementation-only, so release
-// never invokes the reflection path. See task-12 report for the full probe transcript.
+// Android-build-type granularity.
+//
+// Release must never actually ship these classes, though: `generateFunctionKeyMetaClasses`
+// output includes `@FunctionKeyMetaClass(file = "<absolute local source path>")`, which release
+// APKs must never carry, hard constraint aside from just "why ship dead debug-tooling classes".
+// So every `compile*Release*Kotlin` task gets a `doLast` deleting `**/*$KeyMeta*.class` from its
+// own declared outputs before any downstream task (dexing, packaging, R8) reads them. `doLast`
+// runs as part of the task's own execution, so Gradle snapshots the *stripped* output for
+// up-to-date checks — nothing downstream ever sees a KeyMeta class in a release build. This
+// walks `Task.outputs.files` (plain Gradle-core API) rather than the KGP-specific
+// `destinationDirectory` property, so it needs no extra compileOnly dependency and isn't tied to
+// a specific Kotlin Gradle plugin task type.
 private fun enableKeyMeta(project: Project) {
     project.plugins.withId("org.jetbrains.kotlin.plugin.compose") {
         project.extensions.configure(ComposeCompilerGradlePluginExtension::class.java) { ext ->
             ext.generateFunctionKeyMetaClasses.set(true)
         }
+        project.tasks.matching { it.name.startsWith("compile") && it.name.contains("Release") && it.name.endsWith("Kotlin") }
+            .configureEach { task ->
+                task.doLast {
+                    task.outputs.files.forEach { outputDir ->
+                        project.fileTree(outputDir) { it.include("**/*\$KeyMeta*.class") }
+                            .forEach { it.delete() }
+                    }
+                }
+            }
     }
 }
