@@ -79,7 +79,11 @@ top-level app module, default `:app` (override with `--app-module`), which both 
 step and the dex-extraction step target.
 
 ### agent (C++ JVMTI, arm64 + x86_64)
-Attached once via `adb shell am attach-agent`. Load path matters: SELinux blocks debuggable apps loading agents from `/data/local/tmp` on many Android versions, so the CLI pushes the .so to `/data/local/tmp` then copies it into the app's `code_cache` dir via `run-as` (same trick Android Studio uses); patch dex files travel the same route. The agent listens on an abstract-namespace local socket (reached via `adb forward`). It receives a class descriptor + dex path per changed class, calls `RedefineClasses` with the dex bytes, and reports per-class success/failure back to the CLI. After a successful redefine it signals the runtime lib directly — an in-process JNI call to `ComposeInvalidator.reload()` — no extra IPC.
+Attached once via `adb shell am attach-agent`. Load path matters: SELinux blocks debuggable apps loading agents from `/data/local/tmp` on many Android versions, so the CLI pushes the .so to `/data/local/tmp` then copies it into the app's `code_cache` dir via `run-as` (same trick Android Studio uses); patch dex files travel the same route, each cycle's device filename prefixed with a content hash so a failed push/copy can never leave a stale file that gets silently redefined instead. Bootstrap pings first and skips the whole push/copy/attach sequence if the agent already responds — re-pushing `agent.so` onto an already-attached, already-`mmap`'d agent corrupts its own live code pages (reproduced on-device as a SIGSEGV in unrelated code shortly after a second bootstrap call).
+
+The agent listens on an abstract-namespace local socket **named per package** (`hotreload-agent-<package>`, derived from `/proc/self/cmdline`) — a fixed global name would let two instrumented apps collide on one socket. On `accept()` it authenticates the peer via `SO_PEERCRED`, accepting only the app's own uid or `adb`'s daemon uid (root or shell — `adb forward`'s bridged connections arrive as adbd's own uid, not the app's, verified empirically) and rejecting everything else (some other on-device app trying to reach the socket directly), logging rejections.
+
+A `LOAD_DEX` message carries every changed class from one edit as one batch — records separated by an ASCII Record Separator (0x1E) — not one message per class. The agent reads and resolves every class first, then calls `RedefineClasses(n, defs)` **once**, which JVMTI applies atomically: a mid-batch rejection can never leave some classes already swapped and others not (the earlier one-message-per-class design could). The reply status distinguishes real incompatibility (`RedefineClasses` rejected the bytecode, or a new class — unsupported in v1) from environmental/agent-side errors (malformed payload, unreadable dex file) via a distinct status byte, so the CLI doesn't tell the user to "rebuild" for e.g. a disk hiccup. After a successful redefine it signals the runtime lib directly — an in-process JNI call to `ComposeInvalidator.reload()`, passed every redefined class's binary name in one call — no extra IPC.
 
 ### runtime (Android library, debug only)
 `ComposeInvalidator.reload(binaryNames)`, called by the agent via JNI after redefinition, re-renders the UI through a three-tier fallback chain:
@@ -94,7 +98,7 @@ The CLI reports which tier executed so the user knows what state guarantee they 
 
 ### Cycle 0 — Bootstrap
 
-Before the first reload: gradle-plugin applied to the app, `assembleDebug` built and installed, app launched by the user. The CLI then: captures the class-output baseline (content hashes across all modules' kotlin-classes dirs), pushes the agent .so and copies it into `code_cache` via `run-as`, attaches it with `am attach-agent`, sets up `adb forward` to the agent's socket, and pings. Only then does watching begin.
+Before the first reload: gradle-plugin applied to the app, `assembleDebug` built and installed, app launched by the user. The CLI sets up `adb forward` to the agent's (per-package-named) socket and pings first; if that already succeeds (an earlier bootstrap's agent is still attached and responsive), it captures the class-output baseline and returns immediately without touching the device further. Otherwise it pushes the agent .so and copies it into `code_cache` via `run-as`, attaches it with `am attach-agent`, and pings again (retrying briefly — `attach-agent` can return before the agent has actually started listening), then captures the baseline. Only then does watching begin.
 
 ### One Reload Cycle
 
@@ -102,13 +106,17 @@ Before the first reload: gradle-plugin applied to the app, `assembleDebug` built
 2. CLI: Gradle tooling API build of `:app:mergeProjectDexDebug` + `:app:mergeLibDexDebug`
    (pulls in `compileDebugKotlin` for whichever module actually changed, and AGP's own
    dexBuilder tasks, as upstream dependencies of those two)
-3. Diff class output dirs by content hash → changed `.class` set (excluding
+3. Diff class output dirs by content hash, keyed per-module so two modules sharing a relative
+   class path never collapse into one entry → changed `.class` set (excluding
    compiler-generated `$KeyMeta` metadata classes, which never need redefinition — see the
    `cli` section above)
-4. Extract each changed class from AGP's merged dex output (D8 `--file-per-class` split — not
-   a fresh isolated dex encode; see the `cli` section above for why that would be wrong) →
-   `adb push` → socket message to agent
-5. Agent: `RedefineClasses`, per-class result (plus the tier that fired) returned to CLI
+4. Extract each changed class from AGP's merged dex output, matched by its package-qualified
+   path (D8 `--file-per-class` split — not a fresh isolated dex encode; see the `cli` section
+   above for why that would be wrong) → `adb push` every dex file (unique, content-hashed
+   device filename per cycle) → **one** socket message carrying the whole batch to the agent
+5. Agent: reads and resolves every class, then one `RedefineClasses(n, defs)` call for the
+   whole batch (atomic — see the `agent` section above), result (plus the tier that fired)
+   returned to CLI
 6. Runtime lib: invalidate groups for redefined composables → recompose; state untouched → preserved
 7. CLI prints `✓ reloaded 2 classes in 1.8s [tier1 — remember state preserved]` or the failure reason
 
