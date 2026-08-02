@@ -8,6 +8,17 @@ object ComposeInvalidator {
     private const val TAG = "HotReload"
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    /**
+     * No-op; referencing this from [HotReloadInitProvider] on app startup forces this
+     * class to load. Android classes load lazily on first use and nothing else touches
+     * this object before a reload happens — without an eager load here, the JVMTI
+     * agent's `GetLoadedClasses` lookup in `NotifyRuntime` finds nothing and the
+     * recompose signal silently no-ops (logged agent-side as "ComposeInvalidator not
+     * loaded; skipping recompose signal").
+     */
+    @JvmStatic
+    fun ensureLoaded() {}
+
     /** Called by the JVMTI agent via JNI after RedefineClasses succeeds. */
     @JvmStatic
     fun reload() {

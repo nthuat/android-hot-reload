@@ -25,7 +25,7 @@ class ReloadOrchestrator(private val config: ReloadConfig) {
     private val differ = ClassDiffer()
     private val store = BaselineStore(config.projectDir.resolve(".hotreload/baseline.txt"))
     private val compiler = GradleCompiler(config.projectDir)
-    private val dexer = DexPackager()
+    private val dexer = DexPackager(config.projectDir)
 
     private fun allClassDirs() = resolver.allModules().flatMap(resolver::classDirsOf)
 

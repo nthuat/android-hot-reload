@@ -22,10 +22,14 @@ class Adb(
     fun runAsCopy(pkg: String, fromDeviceTmp: String, toRelPath: String): ProcessResult {
         val destDir = toRelPath.substringBeforeLast('/', "")
             .let { if (it.isEmpty()) "code_cache" else "code_cache/$it" }
-        return adb(
-            "shell", "run-as", pkg, "sh", "-c",
-            "mkdir -p $destDir && cp $fromDeviceTmp code_cache/$toRelPath",
-        )
+        val remoteCmd = "mkdir -p $destDir && cp $fromDeviceTmp code_cache/$toRelPath"
+        // `adb shell` joins its trailing argv with spaces before handing it to the
+        // remote `sh -c`, so an unquoted multi-word "sh -c <cmd>" loses its own
+        // quoting boundary and the remote shell sees "-p"/"&&"/etc as separate
+        // words instead of part of one script. Single-quote the compound command
+        // (escaping embedded quotes) so it survives that join as one token.
+        val shellQuoted = "'" + remoteCmd.replace("'", "'\\''") + "'"
+        return adb("shell", "run-as", pkg, "sh", "-c", shellQuoted)
     }
 
     fun attachAgent(pkg: String, agentPathInAppSandbox: String): ProcessResult =

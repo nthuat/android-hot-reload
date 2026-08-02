@@ -33,10 +33,27 @@ class AdbTest {
     fun `runAsCopy mkdirs then copies inside app sandbox`() {
         val fake = FakeRunner()
         Adb("adb", null, fake).runAsCopy("dev.hotreload.sample", "/data/local/tmp/hotreload/agent.so", "hotreload/agent.so")
+        // The compound "sh -c" script is wrapped in single quotes as one argv
+        // token: `adb shell` joins its trailing args with spaces before the
+        // remote shell sees them, so an unquoted multi-word script would be
+        // split apart (see Adb.kt runAsCopy comment).
         assertEquals(
             listOf(
                 "adb", "shell", "run-as", "dev.hotreload.sample",
-                "sh", "-c", "mkdir -p code_cache/hotreload && cp /data/local/tmp/hotreload/agent.so code_cache/hotreload/agent.so",
+                "sh", "-c", "'mkdir -p code_cache/hotreload && cp /data/local/tmp/hotreload/agent.so code_cache/hotreload/agent.so'",
+            ),
+            fake.calls.single(),
+        )
+    }
+
+    @Test
+    fun `runAsCopy escapes single quotes embedded in paths`() {
+        val fake = FakeRunner()
+        Adb("adb", null, fake).runAsCopy("pkg", "/tmp/a'b.dex", "hotreload/a'b.dex")
+        assertEquals(
+            listOf(
+                "adb", "shell", "run-as", "pkg", "sh", "-c",
+                "'mkdir -p code_cache/hotreload && cp /tmp/a'\\''b.dex code_cache/hotreload/a'\\''b.dex'",
             ),
             fake.calls.single(),
         )

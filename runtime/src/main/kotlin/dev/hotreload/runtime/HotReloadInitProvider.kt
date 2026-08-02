@@ -10,6 +10,8 @@ class HotReloadInitProvider : ContentProvider() {
     override fun onCreate(): Boolean {
         (context?.applicationContext as? Application)
             ?.registerActivityLifecycleCallbacks(ActivityTracker)
+        // Eagerly load ComposeInvalidator now — see ComposeInvalidator.ensureLoaded().
+        ComposeInvalidator.ensureLoaded()
         return true
     }
 
