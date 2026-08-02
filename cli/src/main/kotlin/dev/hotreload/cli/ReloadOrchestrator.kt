@@ -53,10 +53,10 @@ class ReloadOrchestrator(private val config: ReloadConfig) {
 
     fun cycle(changedFile: Path): CycleOutcome {
         val start = System.currentTimeMillis()
-        val module = resolver.moduleOf(changedFile)
+        resolver.moduleOf(changedFile)
             ?: return CycleOutcome.CompileError("cannot map $changedFile to a gradle module")
 
-        val compileResult = compiler.compile(module)
+        val compileResult = compiler.compile()
         if (!compileResult.success) return CycleOutcome.CompileError(compileResult.output)
 
         val current = differ.snapshot(allClassDirs())
