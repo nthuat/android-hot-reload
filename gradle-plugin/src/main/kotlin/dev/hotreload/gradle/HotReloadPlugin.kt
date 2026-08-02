@@ -8,10 +8,10 @@ class HotReloadPlugin : Plugin<Project> {
     override fun apply(project: Project) {
         project.plugins.withId("com.android.application") {
             project.dependencies.add("debugImplementation", "dev.hotreload:runtime:0.1.0-SNAPSHOT")
+            enableKeyMeta(project)
         }
         // Key-meta generation must run on every composable-bearing module (app AND libraries) —
         // the JVMTI agent redefines classes in whichever module the edited source lives in.
-        project.plugins.withId("com.android.application") { enableKeyMeta(project) }
         project.plugins.withId("com.android.library") { enableKeyMeta(project) }
     }
 }

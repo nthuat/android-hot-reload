@@ -4,7 +4,6 @@ import org.gradle.testkit.runner.GradleRunner
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
-import java.nio.file.Files
 import kotlin.test.assertTrue
 
 class HotReloadPluginTest {

@@ -70,12 +70,16 @@ HR="$ROOT/cli/build/install/cli/bin/cli"
 echo "== golden path: edit composable body, cycle, assert new text + preserved state =="
 sed -i.bak 's/Hello, \$name!/Reloaded, \$name!/' "$GREETING" && rm -f "$GREETING.bak"
 "$ADB" logcat -c
-"$HR" cycle --project "$ROOT/sample" --package "$PKG" --file "$ROOT/$GREETING" \
-  --agent-so-dir "$AGENT_SO_DIR" \
-  || fail "cycle exited $?"
+CYCLE_OUT=$("$HR" cycle --project "$ROOT/sample" --package "$PKG" --file "$ROOT/$GREETING" \
+  --agent-so-dir "$AGENT_SO_DIR") || fail "cycle exited $?"
+echo "$CYCLE_OUT"
 sleep 2
 ui_contains "Reloaded, World!" || fail "reloaded text not visible"
 ui_contains "Count: 2" || fail "counter state lost after reload"
+# Belt and braces: assert both the CLI's reply-borne tier report and the runtime's own logcat
+# line agree the reload took the tier-1 group-key path (not a weaker fallback).
+echo "$CYCLE_OUT" | grep -q "tier1" \
+  || fail "CLI did not report the tier-1 group-key path in its output"
 "$ADB" logcat -d -s HotReload | grep -q "tier1" \
   || fail "reload did not take the tier-1 group-key path (fell back to a weaker tier)"
 

@@ -4,10 +4,13 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.compose.runtime.internal.FunctionKeyMeta
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 object ComposeInvalidator {
     private const val TAG = "HotReload"
     private val mainHandler = Handler(Looper.getMainLooper())
+    private const val REPLY_TIMEOUT_SECONDS = 2L
 
     /**
      * No-op; referencing this from [HotReloadInitProvider] on app startup forces this
@@ -23,6 +26,15 @@ object ComposeInvalidator {
     /**
      * Called by the JVMTI agent via JNI after RedefineClasses succeeds, once per
      * redefined class, with its binary name (e.g. "dev.hotreload.sample.feature.GreetingKt").
+     * Returns which tier actually fired ("tier1"/"tier2"/"tier3"), or "tier-timeout" if the
+     * main-thread work didn't finish within [REPLY_TIMEOUT_SECONDS] — so the CLI can surface
+     * the real state guarantee to the user instead of just "reloaded".
+     *
+     * The invalidation work itself must run on the main thread (Compose's runtime hooks and
+     * `Activity.recreate()` both require it), but this method is called from the agent's own
+     * attached JNI thread (the socket server thread), not the main thread — so blocking here
+     * on a latch signaled by the posted main-thread work cannot deadlock; they're always two
+     * different threads.
      *
      * Three-tier fallback chain, tier taken always logged at [TAG]:
      *  1. Group-key invalidation (Live Edit's mechanism) — re-executes only the affected
@@ -31,17 +43,32 @@ object ComposeInvalidator {
      *  3. `Activity.recreate()` — last resort when Compose's runtime hooks are unreachable.
      */
     @JvmStatic
-    fun reload(binaryNames: Array<String>) {
+    fun reload(binaryNames: Array<String>): String {
+        val latch = CountDownLatch(1)
+        var tier = "tier-timeout"
         mainHandler.post {
-            val keys = binaryNames.flatMap(::keysForClass)
-            when {
-                keys.isNotEmpty() && invalidateGroupsWithKeys(keys) ->
-                    Log.i(TAG, "tier1: group-key invalidation, keys=$keys")
-                invalidateViaHotReloader() ->
-                    Log.i(TAG, "tier2: whole-composition rebuild via HotReloader")
-                else -> recreateForegroundActivity()
+            try {
+                val keys = binaryNames.flatMap(::keysForClass)
+                tier = when {
+                    keys.isNotEmpty() && invalidateGroupsWithKeys(keys) -> {
+                        Log.i(TAG, "tier1: group-key invalidation, keys=$keys")
+                        "tier1"
+                    }
+                    invalidateViaHotReloader() -> {
+                        Log.i(TAG, "tier2: whole-composition rebuild via HotReloader")
+                        "tier2"
+                    }
+                    else -> {
+                        recreateForegroundActivity()
+                        "tier3"
+                    }
+                }
+            } finally {
+                latch.countDown()
             }
         }
+        latch.await(REPLY_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        return tier
     }
 
     // Compose compiler option `generateFunctionKeyMetaClasses=true` (enabled by the gradle

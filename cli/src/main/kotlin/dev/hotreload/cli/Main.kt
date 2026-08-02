@@ -26,6 +26,7 @@ fun main(args: Array<String>) {
                 ?: Paths.get("").toAbsolutePath()
                     .resolve("agent/build/intermediates/merged_native_libs/debug/mergeDebugNativeLibs/out/lib").toString()
         ),
+        appModule = opts["app-module"] ?: ":app",
     )
     val orchestrator = ReloadOrchestrator(config)
 
@@ -63,8 +64,20 @@ private fun watchLoop(projectDir: Path, orchestrator: ReloadOrchestrator): Nothi
     }
 }
 
+// Short state-guarantee text per tier, for the CLI's post-reload line — see
+// ComposeInvalidator.reload's three-tier fallback chain and the README's "Reload tiers" table.
+private val tierGuarantee = mapOf(
+    "tier1" to "remember state preserved",
+    "tier2" to "UI state reset",
+    "tier3" to "activity recreated",
+    "tier-timeout" to "reload confirmation timed out",
+)
+
 private fun report(outcome: CycleOutcome) = when (outcome) {
-    is CycleOutcome.Reloaded -> println("✓ reloaded ${outcome.classes.size} class(es) in ${outcome.millis}ms: ${outcome.classes.joinToString()}")
+    is CycleOutcome.Reloaded -> {
+        val tierSuffix = outcome.tier?.let { " [$it — ${tierGuarantee[it] ?: "unknown"}]" } ?: ""
+        println("✓ reloaded ${outcome.classes.size} class(es) in ${outcome.millis}ms$tierSuffix: ${outcome.classes.joinToString()}")
+    }
     is CycleOutcome.NoChanges -> println("· no bytecode changes")
     is CycleOutcome.CompileError -> println("✗ compile error:\n${outcome.output}")
     is CycleOutcome.Incompatible -> println("✗ incompatible change: ${outcome.reason}\n  → run a full rebuild + reinstall, then 'hotreload bootstrap' again")
@@ -90,7 +103,7 @@ private fun defaultAdb(): String {
 }
 
 private fun usage(): Nothing {
-    println("usage: hotreload <bootstrap|cycle|run> --project <dir> --package <pkg> [--serial S] [--file f.kt] [--adb path] [--agent-so-dir dir]")
+    println("usage: hotreload <bootstrap|cycle|run> --project <dir> --package <pkg> [--serial S] [--file f.kt] [--adb path] [--agent-so-dir dir] [--app-module :app]")
     exitProcess(64)
 }
 

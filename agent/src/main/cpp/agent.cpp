@@ -72,19 +72,29 @@ std::string DescriptorToBinaryName(const std::string& descriptor) {
 }
 
 // Called once per LOAD_DEX (one redefined class per message); passes that class's binary name
-// so ComposeInvalidator can look up its group keys for tier-1 invalidation.
-void NotifyRuntime(JNIEnv* env, const std::string& descriptor) {
+// so ComposeInvalidator can look up its group keys for tier-1 invalidation. Returns the tier
+// string ComposeInvalidator.reload reports back ("tier1"/"tier2"/"tier3"/"tier-timeout"), or
+// "" if the runtime lib isn't loaded / the call couldn't be made — callers must treat "" as
+// "no tier to report", not as a real tier value.
+std::string NotifyRuntime(JNIEnv* env, const std::string& descriptor) {
   jclass cls = FindLoadedClass(env, "Ldev/hotreload/runtime/ComposeInvalidator;");
   if (cls == nullptr) {
     LOGE("ComposeInvalidator not loaded; skipping recompose signal");
-    return;
+    return "";
   }
-  jmethodID reload = env->GetStaticMethodID(cls, "reload", "([Ljava/lang/String;)V");
+  std::string tier;
+  jmethodID reload = env->GetStaticMethodID(cls, "reload", "([Ljava/lang/String;)Ljava/lang/String;");
   if (reload != nullptr) {
     jclass stringClass = env->FindClass("java/lang/String");
     jstring binaryName = env->NewStringUTF(DescriptorToBinaryName(descriptor).c_str());
     jobjectArray names = env->NewObjectArray(1, stringClass, binaryName);
-    env->CallStaticVoidMethod(cls, reload, names);
+    auto result = static_cast<jstring>(env->CallStaticObjectMethod(cls, reload, names));
+    if (result != nullptr) {
+      const char* chars = env->GetStringUTFChars(result, nullptr);
+      if (chars != nullptr) tier.assign(chars);
+      env->ReleaseStringUTFChars(result, chars);
+      env->DeleteLocalRef(result);
+    }
     env->DeleteLocalRef(names);
     env->DeleteLocalRef(binaryName);
     env->DeleteLocalRef(stringClass);
@@ -94,6 +104,7 @@ void NotifyRuntime(JNIEnv* env, const std::string& descriptor) {
     env->ExceptionClear();
   }
   env->DeleteGlobalRef(cls);
+  return tier;
 }
 
 // payload: "<descriptor>\n<dex path>". Returns reply detail; sets *ok.
@@ -174,7 +185,8 @@ void ServeClient(int fd, JNIEnv* env) {
       std::string detail = HandleLoadDex(env, payload, &ok);
       if (ok) {
         size_t nl = payload.find('\n');
-        NotifyRuntime(env, payload.substr(0, nl));
+        std::string tier = NotifyRuntime(env, payload.substr(0, nl));
+        if (!tier.empty()) detail += " | " + tier;
       }
       SendReply(fd, ok ? kStatusOk : kStatusFail, detail);
       LOGI("LOAD_DEX: %s", detail.c_str());
