@@ -69,12 +69,15 @@ HR="$ROOT/cli/build/install/cli/bin/cli"
 
 echo "== golden path: edit composable body, cycle, assert new text + preserved state =="
 sed -i.bak 's/Hello, \$name!/Reloaded, \$name!/' "$GREETING" && rm -f "$GREETING.bak"
+"$ADB" logcat -c
 "$HR" cycle --project "$ROOT/sample" --package "$PKG" --file "$ROOT/$GREETING" \
   --agent-so-dir "$AGENT_SO_DIR" \
   || fail "cycle exited $?"
 sleep 2
 ui_contains "Reloaded, World!" || fail "reloaded text not visible"
 ui_contains "Count: 2" || fail "counter state lost after reload"
+"$ADB" logcat -d -s HotReload | grep -q "tier1" \
+  || fail "reload did not take the tier-1 group-key path (fell back to a weaker tier)"
 
 echo "== incompatible path: add a function, expect exit 2 and clean error =="
 cat >> "$GREETING" <<'EOF'

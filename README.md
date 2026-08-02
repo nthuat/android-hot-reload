@@ -38,10 +38,24 @@ on an API 34 x86_64 emulator; see `e2e/run-e2e.sh`.
 | Add/remove/reorder fields | No — same restriction |
 | Add/remove a class | No |
 | Change a function signature | No |
-| State held in `remember`/`rememberSaveable` inside the recomposed tree | Not preserved — the reload disposes and rebuilds the composition. Hoist state that must survive a reload to the `Activity`/`ViewModel`, same as you would for configuration changes. |
+| `remember`/`rememberSaveable` state in a composable **other than** the one whose file was edited | Yes, on the primary (tier-1) path — Compose group-key invalidation (`invalidateGroupsWithKey`) recomposes only the changed scope in place, the same mechanism Android Studio Live Edit uses. |
+| `remember`/`rememberSaveable` state **inside** the edited composable's own file | Not preserved — that scope re-executes fresh against the new bytecode, same as Live Edit. Hoist state that must survive an edit to its *own* file to the `Activity`/`ViewModel`. |
 
 Anything in the "No" column returns exit code 2 with a message telling you to rebuild; the CLI
 never leaves the app in a corrupted state.
+
+### Reload tiers
+
+Each reload picks the strongest tier that succeeds, logged at tag `HotReload`:
+
+1. **`tier1: group-key invalidation`** — recomposes only the scopes belonging to the redefined
+   class's Compose group keys. Preserves `remember` state everywhere else in the composition.
+2. **`tier2: whole-composition rebuild via HotReloader`** — falls back to disposing and
+   rebuilding the entire composition when group-key invalidation isn't reachable. Loses all
+   `remember` state, not just the edited scope's.
+3. **`tier3: recreating <Activity>`** — last resort, a full `Activity.recreate()`.
+
+Run `adb logcat -s HotReload` during a reload to see which tier actually fired.
 
 ## How it works
 
