@@ -7,6 +7,7 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import kotlin.io.path.relativeTo
 
 // Dexing a class in isolation (fresh D8 invocation on just its .class file) cannot be used
 // for RedefineClasses: D8's synthetic-lambda naming (e.g. the bridge method backing every
@@ -26,7 +27,13 @@ class DexPackager(
     private val minApi: Int = 26,
 ) {
     fun dexClass(changed: ChangedClass, outDir: Path): Path {
-        val simpleName = changed.binaryName.substringAfterLast('.')
+        // D8's file-per-class output mirrors the class's package as directories, e.g.
+        // com.b.Util -> com/b/Util.dex — package-qualified, not just the bare simple name.
+        // Matching on bare "<SimpleName>.dex" (old behavior) collided whenever two classes in
+        // different packages shared a simple name (com.a.Util vs com.b.Util): whichever the
+        // walk happened to visit first won, so the wrong module's bytes could be pushed for a
+        // same-named class and a valid edit misreported as an incompatible change.
+        val expectedRel = changed.binaryName.replace('.', '/') + ".dex"
         val work = Files.createTempDirectory("hotreload-d8-split")
         try {
             for (mergedDex in mergedDexCandidates()) {
@@ -40,11 +47,15 @@ class DexPackager(
                         .build()
                 )
                 val hit = Files.walk(splitDir).use { s ->
-                    s.filter { it.fileName.toString() == "$simpleName.dex" }.findFirst()
+                    s.filter { it.toString().endsWith(".dex") }
+                        .filter { it.relativeTo(splitDir).toString().replace('\\', '/') == expectedRel }
+                        .findFirst()
                 }
                 if (hit.isPresent) {
                     Files.createDirectories(outDir)
-                    val target = outDir.resolve("$simpleName.dex")
+                    // Collision-free output filename: fully-qualified name (dots -> underscores)
+                    // instead of the bare simple name two different packages could share.
+                    val target = outDir.resolve("${changed.binaryName.replace('.', '_')}.dex")
                     Files.move(hit.get(), target, StandardCopyOption.REPLACE_EXISTING)
                     return target
                 }

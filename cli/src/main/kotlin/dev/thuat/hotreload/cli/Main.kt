@@ -5,6 +5,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardWatchEventKinds
+import kotlin.io.path.relativeTo
 import kotlin.system.exitProcess
 
 fun main(args: Array<String>) {
@@ -46,10 +47,23 @@ fun main(args: Array<String>) {
     }
 }
 
+// Segment-based, not substring: the old `path.contains("src") && !path.contains("build")` check
+// matched anywhere in the *absolute* path. A project checked out under a path containing "build"
+// (e.g. ~/repos/build-tools/myapp) registered zero watchers — `run` then hangs forever with no
+// indication why — and a path containing "src" (e.g. ~/src/myapp) happily registered .git/.idea
+// as "src" dirs too. Pure so it's directly unit testable without a real filesystem/WatchService.
+internal fun isWatchableDir(dir: Path, projectDir: Path): Boolean {
+    if (dir == projectDir) return false
+    val segments = dir.relativeTo(projectDir).map { it.toString() }
+    return segments.none { it.startsWith(".") } &&   // skip .git, .gradle, .idea, .hotreload, ...
+        segments.none { it == "build" } &&
+        segments.any { it == "src" }
+}
+
 private fun watchLoop(projectDir: Path, orchestrator: ReloadOrchestrator): Nothing {
     val watcher = FileSystems.getDefault().newWatchService()
     Files.walk(projectDir).use { stream ->
-        stream.filter { Files.isDirectory(it) && it.toString().contains("src") && !it.toString().contains("build") }
+        stream.filter { Files.isDirectory(it) && isWatchableDir(it, projectDir) }
             .forEach { it.register(watcher, StandardWatchEventKinds.ENTRY_MODIFY, StandardWatchEventKinds.ENTRY_CREATE) }
     }
     while (true) {

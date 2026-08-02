@@ -69,4 +69,56 @@ class DexPackagerTest {
         val ex = assertFailsWith<IllegalStateException> { DexPackager(tmp.root.toPath()).dexClass(fixture, out) }
         assertTrue(ex.message!!.contains("Fixture"))
     }
+
+    private fun compilePackaged(pkg: String, simpleName: String): ChangedClass {
+        val pkgDir = tmp.root.toPath().resolve("src").resolve(pkg.replace('.', '/'))
+        Files.createDirectories(pkgDir)
+        val src = pkgDir.resolve("$simpleName.java")
+        Files.write(src, "package $pkg; public class $simpleName { public int id() { return 1; } }".toByteArray())
+        val outDir = tmp.root.toPath().resolve("classes")
+        Files.createDirectories(outDir)
+        val rc = ToolProvider.getSystemJavaCompiler()
+            .run(null, null, null, "-d", outDir.toString(), src.toString())
+        assertEquals(0, rc)
+        val binaryName = "$pkg.$simpleName"
+        return ChangedClass(
+            classFile = outDir.resolve(binaryName.replace('.', '/') + ".class"),
+            binaryName = binaryName,
+            descriptor = "L${binaryName.replace('.', '/')};",
+        )
+    }
+
+    // F6: bare "<SimpleName>.dex" filename matching ignored the package, so two classes with
+    // the same simple name in different packages collided — whichever the walk visited first
+    // was extracted for BOTH, silently pushing the wrong module's bytes for one of them.
+    @Test
+    fun `distinguishes two classes with the same simple name in different packages`() {
+        val classA = compilePackaged("a", "Util")
+        val classB = compilePackaged("b", "Util")
+
+        val bucketDir = tmp.root.toPath().resolve("app/build/intermediates/dex/debug/mergeProjectDexDebug/0")
+        Files.createDirectories(bucketDir)
+        D8.run(
+            D8Command.builder()
+                .addProgramFiles(classA.classFile, classB.classFile)
+                .setMinApiLevel(26)
+                .setOutput(bucketDir, OutputMode.DexIndexed)
+                .build()
+        )
+
+        val out = tmp.root.toPath().resolve("dex")
+        val dexA = DexPackager(tmp.root.toPath()).dexClass(classA, out)
+        val dexB = DexPackager(tmp.root.toPath()).dexClass(classB, out)
+
+        assertEquals("a_Util.dex", dexA.fileName.toString())
+        assertEquals("b_Util.dex", dexB.fileName.toString())
+        val bytesA = String(Files.readAllBytes(dexA), Charsets.ISO_8859_1)
+        val bytesB = String(Files.readAllBytes(dexB), Charsets.ISO_8859_1)
+        assertTrue(bytesA.contains("La/Util;"))
+        assertTrue(bytesB.contains("Lb/Util;"))
+        // The actual collision this test guards against: extracting a.Util must not silently
+        // hand back b.Util's bytes (or vice versa).
+        assertTrue(!bytesA.contains("Lb/Util;"))
+        assertTrue(!bytesB.contains("La/Util;"))
+    }
 }

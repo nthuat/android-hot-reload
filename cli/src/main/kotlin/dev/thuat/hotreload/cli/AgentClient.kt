@@ -8,8 +8,10 @@ class AgentClient(host: String, port: Int) : Closeable {
 
     fun ping(): Reply = request(Protocol.CMD_PING, ByteArray(0))
 
-    fun loadDex(descriptor: String, deviceDexPath: String): Reply =
-        request(Protocol.CMD_LOAD_DEX, "$descriptor\n$deviceDexPath".toByteArray())
+    // records: (descriptor, deviceDexPath) pairs, all classes from one edit — see Protocol's
+    // RECORD_SEP doc for why this is one message instead of one per class.
+    fun loadDex(records: List<Pair<String, String>>): Reply =
+        request(Protocol.CMD_LOAD_DEX, Protocol.encodeLoadDexPayload(records))
 
     private fun request(cmd: Byte, payload: ByteArray): Reply {
         socket.getOutputStream().apply {
