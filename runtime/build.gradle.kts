@@ -1,8 +1,8 @@
 plugins { alias(libs.plugins.android.library); alias(libs.plugins.kotlin.android) }
-group = "dev.hotreload"
+group = "dev.thuat"
 version = "0.1.0-SNAPSHOT"
 android {
-    namespace = "dev.hotreload.runtime"
+    namespace = "dev.thuat.hotreload.runtime"
     compileSdk = 35
     defaultConfig { minSdk = 26 }
     compileOptions {

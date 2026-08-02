@@ -60,7 +60,7 @@ jclass FindLoadedClass(JNIEnv* env, const char* descriptor) {
   return found;
 }
 
-// "Ldev/hotreload/sample/feature/GreetingKt;" -> "dev.hotreload.sample.feature.GreetingKt"
+// "Ldev/thuat/hotreload/sample/feature/GreetingKt;" -> "dev.thuat.hotreload.sample.feature.GreetingKt"
 std::string DescriptorToBinaryName(const std::string& descriptor) {
   std::string name = descriptor;
   if (!name.empty() && name.front() == 'L') name.erase(0, 1);
@@ -77,7 +77,7 @@ std::string DescriptorToBinaryName(const std::string& descriptor) {
 // "" if the runtime lib isn't loaded / the call couldn't be made — callers must treat "" as
 // "no tier to report", not as a real tier value.
 std::string NotifyRuntime(JNIEnv* env, const std::string& descriptor) {
-  jclass cls = FindLoadedClass(env, "Ldev/hotreload/runtime/ComposeInvalidator;");
+  jclass cls = FindLoadedClass(env, "Ldev/thuat/hotreload/runtime/ComposeInvalidator;");
   if (cls == nullptr) {
     LOGE("ComposeInvalidator not loaded; skipping recompose signal");
     return "";

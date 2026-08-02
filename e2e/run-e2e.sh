@@ -4,8 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 ADB="${ANDROID_HOME}/platform-tools/adb"
-PKG="dev.hotreload.sample"
-GREETING="sample/feature/src/main/kotlin/dev/hotreload/sample/feature/Greeting.kt"
+PKG="dev.thuat.hotreload.sample"
+GREETING="sample/feature/src/main/kotlin/dev/thuat/hotreload/sample/feature/Greeting.kt"
 AGENT_SO_DIR="$ROOT/agent/build/intermediates/merged_native_libs/debug/mergeDebugNativeLibs/out/lib"
 
 cleanup() { git checkout -- "$GREETING" 2>/dev/null || true; }

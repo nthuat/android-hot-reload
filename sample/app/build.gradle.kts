@@ -2,13 +2,13 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
-    id("dev.hotreload")
+    id("dev.thuat.hotreload")
 }
 android {
-    namespace = "dev.hotreload.sample"
+    namespace = "dev.thuat.hotreload.sample"
     compileSdk = 35
     defaultConfig {
-        applicationId = "dev.hotreload.sample"
+        applicationId = "dev.thuat.hotreload.sample"
         minSdk = 26
         targetSdk = 35
         versionCode = 1

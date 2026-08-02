@@ -1,5 +1,5 @@
 plugins { alias(libs.plugins.kotlin.jvm); application }
-application { mainClass.set("dev.hotreload.cli.MainKt") }
+application { mainClass.set("dev.thuat.hotreload.cli.MainKt") }
 dependencies {
     implementation(libs.gradle.tooling.api)
     implementation(libs.r8)

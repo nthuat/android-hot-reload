@@ -27,7 +27,7 @@ on an API 34 x86_64 emulator; see `e2e/run-e2e.sh`.
    ```kotlin
    // app/build.gradle.kts
    plugins {
-       id("dev.hotreload")
+       id("dev.thuat.hotreload")
    }
    ```
 3. Build, install, and launch your debug build as usual.

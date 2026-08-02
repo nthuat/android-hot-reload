@@ -2,10 +2,10 @@ plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
-    id("dev.hotreload")
+    id("dev.thuat.hotreload")
 }
 android {
-    namespace = "dev.hotreload.sample.feature"
+    namespace = "dev.thuat.hotreload.sample.feature"
     compileSdk = 35
     defaultConfig { minSdk = 26 }
     compileOptions {

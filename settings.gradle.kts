@@ -12,3 +12,7 @@ dependencyResolutionManagement {
 }
 rootProject.name = "android-hot-reload"
 include(":cli", ":gradle-plugin", ":runtime", ":agent")
+// Published artifact name for the composite-build substitution consumers see as
+// "dev.thuat:hotreload-runtime" — directory stays "runtime", only the project name (and thus
+// the default group:name coordinate) changes.
+project(":runtime").name = "hotreload-runtime"

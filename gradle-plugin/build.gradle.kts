@@ -1,11 +1,11 @@
 plugins { alias(libs.plugins.kotlin.jvm); `java-gradle-plugin` }
-group = "dev.hotreload"
+group = "dev.thuat"
 version = "0.1.0-SNAPSHOT"
 gradlePlugin {
     plugins {
         create("hotreload") {
-            id = "dev.hotreload"
-            implementationClass = "dev.hotreload.gradle.HotReloadPlugin"
+            id = "dev.thuat.hotreload"
+            implementationClass = "dev.thuat.hotreload.gradle.HotReloadPlugin"
         }
     }
 }
