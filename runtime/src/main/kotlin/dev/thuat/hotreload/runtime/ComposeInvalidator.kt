@@ -72,24 +72,46 @@ object ComposeInvalidator {
     }
 
     // Compose compiler option `generateFunctionKeyMetaClasses=true` (enabled by the gradle
-    // plugin on debug builds) emits a sibling `<Facade>$KeyMeta` class per source file, carrying
-    // one repeatable @FunctionKeyMeta(key, startOffset, endOffset) per composable function OR
-    // nested composable lambda in that file. A single edit commonly redefines several classes
-    // from the same file in separate reload() calls — the file facade itself (e.g. GreetingKt),
-    // the KeyMeta class (redefined too since its own annotation offsets shift), and any nested
-    // composable-lambda classes (e.g. GreetingKt$Greeting$1$2 for a trailing lambda). Only the
-    // facade has a directly-named "$KeyMeta" sibling, so always strip down to the facade (the
-    // segment before the first '$') before deriving that name — otherwise the second and third
-    // reload() calls in that sequence find no keys, fall through to tier-2, and wipe out the
-    // remembered state tier-1 just preserved on the first call. Redundantly re-invalidating the
-    // same keys from multiple calls is harmless (idempotent).
-    private fun keysForClass(binaryName: String): List<Int> = try {
-        val facadeName = binaryName.substringBefore('$')
-        val target = Class.forName(facadeName)
-        val keyMeta = Class.forName("$facadeName\$KeyMeta", false, target.classLoader)
+    // plugin on debug builds) emits a sibling `<FileFacade>$KeyMeta` class per *source file*,
+    // carrying one repeatable @FunctionKeyMeta(key, startOffset, endOffset) per composable
+    // function or nested composable lambda declared anywhere in that file — including
+    // composables that are members of a class, not just top-level ones.
+    //
+    // The redefined binary name doesn't always tell you the file facade directly:
+    //  (a) A top-level composable's own class or a nested composable lambda (e.g.
+    //      `GreetingKt`, `GreetingKt$Greeting$1$2`) — the segment before the first '$' IS
+    //      already the file facade, so `<outer>$KeyMeta` is correct.
+    //  (b) A composable that's a MEMBER of a class declared in that file (e.g. `class
+    //      MyScreen { @Composable fun Body() }` in MyScreen.kt) redefines `MyScreen` itself,
+    //      not a `MyScreenKt` class — but the KeyMeta sibling is still attached to the file
+    //      facade, `MyScreenKt$KeyMeta`, which is a *different* class from `MyScreen$KeyMeta`
+    //      (nonexistent). Candidate (a) alone silently finds zero keys here, falls through to
+    //      tier-2, and wipes all `remember` state on every reload of a member composable.
+    // Try both; union whichever load (Class.forName failures for a missing candidate are
+    // expected and silent — only a total miss across every candidate logs a warning). A single
+    // edit commonly redefines several classes from the same file across one reload() call (the
+    // batch now carries all of them — see agent.cpp/Protocol.RECORD_SEP), so keys from multiple
+    // classes are already unioned by the caller's `binaryNames.flatMap(::keysForClass)`;
+    // redundantly re-finding the same keys from multiple candidates/classes is harmless
+    // (invalidateGroupsWithKey is idempotent).
+    private fun keysForClass(binaryName: String): List<Int> {
+        val outer = binaryName.substringBefore('$')
+        val candidates = linkedSetOf("$outer\$KeyMeta", "${outer}Kt\$KeyMeta")
+        val keys = candidates.flatMap { keyMetaName -> loadKeyMetaKeys(binaryName, keyMetaName) }.distinct()
+        if (keys.isEmpty()) {
+            Log.w(TAG, "keysForClass($binaryName): no KeyMeta class found among candidates $candidates")
+        }
+        return keys
+    }
+
+    private fun loadKeyMetaKeys(binaryName: String, keyMetaName: String): List<Int> = try {
+        // Load via `binaryName`'s own classloader: `binaryName` is guaranteed loaded (the agent
+        // just redefined it), whereas `outer` derived from it is not always the same class and
+        // isn't guaranteed loaded yet on its own.
+        val target = Class.forName(binaryName)
+        val keyMeta = Class.forName(keyMetaName, false, target.classLoader)
         keyMeta.getAnnotationsByType(FunctionKeyMeta::class.java).map { it.key }
     } catch (t: Throwable) {
-        Log.w(TAG, "keysForClass($binaryName) failed: ${t.javaClass.simpleName}: ${t.message}")
         emptyList()
     }
 
