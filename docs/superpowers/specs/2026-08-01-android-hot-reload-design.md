@@ -12,7 +12,7 @@ ART on stock devices provides everything needed: debuggable apps accept JVMTI ag
 
 ## V1 Scope
 
-**Reloads reliably:** method-body changes to composable functions (and any other class's method bodies, which the same primitive gives for free). UI updates on device with state preserved — `remember`, ViewModel, navigation, scroll all survive because only code is swapped, never the object graph.
+**Reloads reliably:** method-body changes to composable functions (and any other class's method bodies, which the same primitive gives for free). UI updates on device with state preserved — `remember`, ViewModel, navigation, scroll all survive on the primary reload path (group-key invalidation; see runtime component), because only code is swapped and only affected recompose scopes re-execute. Fallback paths carry progressively weaker state guarantees, and the CLI reports which path ran.
 
 **Target projects:** Android-only Compose apps, including large multi-module builds and mixed Views+Compose codebases. Only Compose UI re-renders automatically; changed non-composable classes still get body-swapped but Views don't refresh themselves.
 
@@ -61,7 +61,13 @@ The daemon loop: file watcher → Gradle tooling API incremental compile of the 
 Attached once via `adb shell am attach-agent`. Load path matters: SELinux blocks debuggable apps loading agents from `/data/local/tmp` on many Android versions, so the CLI pushes the .so to `/data/local/tmp` then copies it into the app's `code_cache` dir via `run-as` (same trick Android Studio uses); patch dex files travel the same route. The agent listens on an abstract-namespace local socket (reached via `adb forward`). It receives a class descriptor + dex path per changed class, calls `RedefineClasses` with the dex bytes, and reports per-class success/failure back to the CLI. After a successful redefine it signals the runtime lib directly — an in-process JNI call to `ComposeInvalidator.reload()` — no extra IPC.
 
 ### runtime (Android library, debug only)
-`ComposeInvalidator.reload()`, called by the agent via JNI, triggers whole-app recomposition through Compose runtime's internal `HotReloader` object (invoked reflectively — the same hook JetBrains desktop hot reload uses). Whole-app recompose costs milliseconds and avoids computing compiler-generated group keys entirely; per-group precision is a later optimization, not a v1 requirement. If reflection fails (Compose version shifted the internal API), fallback is `Activity.recreate()` on the tracked foreground activity.
+`ComposeInvalidator.reload(binaryNames)`, called by the agent via JNI after redefinition, re-renders the UI through a three-tier fallback chain:
+
+1. **Group-key invalidation (primary — preserves `remember` state).** The gradle-plugin enables the Compose compiler's function-key-metadata output for debug builds; at reload time the runtime maps each redefined class to its compiler-emitted key-meta annotations and calls the Compose runtime's internal `invalidateGroupsWithKey` (reflectively, probing both `HotReloader` and `Recomposer.Companion` homes). Only the affected recompose scopes re-execute; the slot table survives, so `remember` state in untouched groups is preserved. This is the same mechanism Android Studio's Live Edit uses.
+2. **Whole-composition rebuild (`HotReloader.saveStateAndDispose`/`loadStateAndCompose`).** Empirically verified on device: this path disposes the entire composition and discards ALL `remember`/`rememberSaveable` slots (`rememberSaveable` restore only replays a real Activity save/restore round trip). Activity-instance and ViewModel state survive. Used only when tier 1's reflection targets are unavailable.
+3. **`Activity.recreate()`** on the tracked foreground activity — full restart of the visible screen, state loss over wrong state.
+
+The CLI reports which tier executed so the user knows what state guarantee they got.
 
 ## Data Flow
 

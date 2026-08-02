@@ -2166,6 +2166,42 @@ Push and confirm both CI jobs green.
 
 ---
 
+## Addendum (2026-08-02): remember-state preservation
+
+Task 11's on-device run proved `HotReloader.saveStateAndDispose`/`loadStateAndCompose` discards all `remember`/`rememberSaveable` state (whole-composition rebuild; only Activity/ViewModel state survives). User ruling: pursue true `remember` preservation via Live-Edit-style group invalidation. Spec's runtime section now defines a three-tier chain. Tasks 12–13 implement it.
+
+### Task 12: Group-key invalidation (preserves remember state)
+
+**Files:**
+- Modify: `gradle-plugin/src/main/kotlin/dev/hotreload/gradle/HotReloadPlugin.kt` — enable Compose compiler key-meta output on debug compilations (app AND library modules)
+- Modify: `gradle-plugin/build.gradle.kts` — `compileOnly` kotlin-gradle-plugin for task-type access
+- Modify: `runtime/src/main/kotlin/dev/hotreload/runtime/ComposeInvalidator.kt` — new `reload(binaryNames: Array<String>)` JNI entry, key lookup, `invalidateGroupsWithKey` tier
+- Modify: `agent/src/main/cpp/agent.cpp` — call `reload([Ljava/lang/String;)V` with redefined binary names
+- Modify: `sample/feature/build.gradle.kts` + `sample/app/build.gradle.kts` — apply `dev.hotreload` plugin to feature module too (flag must reach every composable-bearing module)
+
+**Interfaces:**
+- Consumes: agent's `NotifyRuntime` call site (Task 9), `ComposeInvalidator` (Task 7), plugin (Task 8).
+- Produces: JNI target becomes `dev/hotreload/runtime/ComposeInvalidator.reload([Ljava/lang/String;)V` taking binary class names (e.g. `"dev.hotreload.sample.feature.GreetingKt"`). Reply detail from agent unchanged. CLI unchanged.
+
+**Empirical steps (this is R&D — probe, then implement):**
+
+- [ ] **Step 1: Enable key-meta flag and inspect output.** In the gradle plugin, for every project with a Kotlin Android compilation, add to DEBUG compile tasks: `freeCompilerArgs += listOf("-P", "plugin:androidx.compose.compiler.plugins.kotlin:generateFunctionKeyMetaClasses=true")`. If the Kotlin 2.1 compose plugin rejects that option name, dump valid options (compile with a bogus `-P plugin:androidx.compose.compiler.plugins.kotlin:help=true` or check `ComposePluginRegistrar` option names via the compose-compiler artifact) and use the current name. Rebuild sample; inspect `sample/feature/build/tmp/kotlin-classes/debug/` for generated `*KeyMeta*` classes; `javap -p -v` one to learn: exact class naming pattern per source file, and the annotation shape (`FunctionKeyMeta(key=..., startOffset=..., endOffset=...)`). Record findings in the report.
+- [ ] **Step 2: Runtime key lookup + invalidation.** `keysForClass(binaryName)`: derive the key-meta class name from the pattern learned in Step 1, `Class.forName` it via the redefined class's classloader, read its `FunctionKeyMeta` annotations, return keys. `invalidateGroupsWithKey(keys)`: reflectively resolve a `invalidateGroupsWithKey(Int)` method — probe `androidx.compose.runtime.HotReloader` (object + Companion) and `androidx.compose.runtime.Recomposer$Companion` — call per key on main thread; any hit counts as success. New chain in `reload(binaryNames)`: tier 1 keys+invalidate → tier 2 existing `invalidateViaHotReloader()` → tier 3 recreate. Log tier taken with tag `HotReload` (CLI already surfaces agent detail; include tier in logcat at minimum).
+- [ ] **Step 3: Agent passes names.** In `NotifyRuntime`, build `jobjectArray` of `java/lang/String` binary names (descriptor `Lfoo/Bar;` → `foo.Bar`), call `GetStaticMethodID(cls, "reload", "([Ljava/lang/String;)V")`. Keep exception hygiene identical. Rebuild both ABIs, nm check.
+- [ ] **Step 4: Verify on device.** Manual cycle against sample: edit `Greeting.kt` body, run `hotreload cycle`, logcat must show tier-1 invalidation (not saveStateAndDispose), UI updates. If `invalidateGroupsWithKey` proves unreachable in Compose 1.7.x (wrong home, obfuscated, absent), STOP and report BLOCKED with the probe evidence — do not silently ship tier 2 as primary.
+- [ ] **Step 5: Commit.**
+
+### Task 13: E2E proves remember survival
+
+**Files:**
+- Modify: `sample/app/src/main/kotlin/dev/hotreload/sample/MainActivity.kt` — counter back to `remember { mutableIntStateOf(0) }` inside the composable
+- Modify: `e2e/run-e2e.sh` — golden path unchanged (`Count: 2` after reload now proves remember survival); assert logcat shows tier-1 path taken
+
+- [ ] **Step 1: Revert probe to remember state.**
+- [ ] **Step 2: Add tier assertion.** After the golden-path cycle, `adb logcat -d -s HotReload | grep -q "group-key"` (match the tier-1 log line from Task 12 Step 2) — fail the E2E if the reload fell back to a weaker tier.
+- [ ] **Step 3: Run `e2e/run-e2e.sh` to PASS 3x consecutively.**
+- [ ] **Step 4: Update README supported table — remember state preserved on primary path; document fallback tiers. Commit.**
+
 ## Self-Review Notes
 
 - Spec coverage: bootstrap (Task 10), reload cycle (Tasks 3–6, 10), agent (9), runtime invalidation + fallback (7), gradle plugin (8), error taxonomy → exit codes (10), E2E golden + incompatible (11), CI (11). Multi-device `--serial` (10). Deferred items from spec stay deferred.
