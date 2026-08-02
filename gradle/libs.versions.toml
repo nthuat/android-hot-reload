@@ -10,6 +10,7 @@ gradle-tooling-api = { module = "org.gradle:gradle-tooling-api", version.ref = "
 r8 = { module = "com.android.tools:r8", version.ref = "r8" }
 compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
 junit4 = { module = "junit:junit", version = "4.13.2" }
+compose-compiler-gradle-plugin = { module = "org.jetbrains.kotlin:compose-compiler-gradle-plugin", version.ref = "kotlin" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

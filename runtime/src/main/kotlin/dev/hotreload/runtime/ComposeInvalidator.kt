@@ -3,6 +3,7 @@ package dev.hotreload.runtime
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import androidx.compose.runtime.internal.FunctionKeyMeta
 
 object ComposeInvalidator {
     private const val TAG = "HotReload"
@@ -19,20 +20,90 @@ object ComposeInvalidator {
     @JvmStatic
     fun ensureLoaded() {}
 
-    /** Called by the JVMTI agent via JNI after RedefineClasses succeeds. */
+    /**
+     * Called by the JVMTI agent via JNI after RedefineClasses succeeds, once per
+     * redefined class, with its binary name (e.g. "dev.hotreload.sample.feature.GreetingKt").
+     *
+     * Three-tier fallback chain, tier taken always logged at [TAG]:
+     *  1. Group-key invalidation (Live Edit's mechanism) — re-executes only the affected
+     *     recompose scopes; preserves `remember` state.
+     *  2. Whole-composition rebuild via `HotReloader` reflection — loses `remember` state.
+     *  3. `Activity.recreate()` — last resort when Compose's runtime hooks are unreachable.
+     */
     @JvmStatic
-    fun reload() {
+    fun reload(binaryNames: Array<String>) {
         mainHandler.post {
-            if (!invalidateViaHotReloader()) {
-                val activity = ActivityTracker.foreground
-                if (activity != null) {
-                    Log.w(TAG, "HotReloader unavailable; recreating ${activity.javaClass.simpleName}")
-                    activity.recreate()
-                } else {
-                    Log.e(TAG, "Reload signalled but no foreground activity to refresh")
-                }
+            val keys = binaryNames.flatMap(::keysForClass)
+            when {
+                keys.isNotEmpty() && invalidateGroupsWithKeys(keys) ->
+                    Log.i(TAG, "tier1: group-key invalidation, keys=$keys")
+                invalidateViaHotReloader() ->
+                    Log.i(TAG, "tier2: whole-composition rebuild via HotReloader")
+                else -> recreateForegroundActivity()
             }
         }
+    }
+
+    // Compose compiler option `generateFunctionKeyMetaClasses=true` (enabled by the gradle
+    // plugin on debug builds) emits a sibling `<Facade>$KeyMeta` class per source file, carrying
+    // one repeatable @FunctionKeyMeta(key, startOffset, endOffset) per composable function OR
+    // nested composable lambda in that file. A single edit commonly redefines several classes
+    // from the same file in separate reload() calls — the file facade itself (e.g. GreetingKt),
+    // the KeyMeta class (redefined too since its own annotation offsets shift), and any nested
+    // composable-lambda classes (e.g. GreetingKt$Greeting$1$2 for a trailing lambda). Only the
+    // facade has a directly-named "$KeyMeta" sibling, so always strip down to the facade (the
+    // segment before the first '$') before deriving that name — otherwise the second and third
+    // reload() calls in that sequence find no keys, fall through to tier-2, and wipe out the
+    // remembered state tier-1 just preserved on the first call. Redundantly re-invalidating the
+    // same keys from multiple calls is harmless (idempotent).
+    private fun keysForClass(binaryName: String): List<Int> = try {
+        val facadeName = binaryName.substringBefore('$')
+        val target = Class.forName(facadeName)
+        val keyMeta = Class.forName("$facadeName\$KeyMeta", false, target.classLoader)
+        keyMeta.getAnnotationsByType(FunctionKeyMeta::class.java).map { it.key }
+    } catch (t: Throwable) {
+        Log.w(TAG, "keysForClass($binaryName) failed: ${t.javaClass.simpleName}: ${t.message}")
+        emptyList()
+    }
+
+    private fun invalidateGroupsWithKeys(keys: List<Int>): Boolean {
+        val invalidate = resolveInvalidateGroupsWithKey() ?: return false
+        var any = false
+        for (key in keys) {
+            try {
+                invalidate(key)
+                any = true
+            } catch (t: Throwable) {
+                Log.w(TAG, "invalidateGroupsWithKey($key) failed: ${t.javaClass.simpleName}: ${t.message}")
+            }
+        }
+        return any
+    }
+
+    // Same hook Android Studio Live Edit uses. Probe the public wrapper first, then the
+    // internal Companion homes directly in case a future Compose version drops the wrapper.
+    private fun resolveInvalidateGroupsWithKey(): ((Int) -> Unit)? {
+        try {
+            val cls = Class.forName("androidx.compose.runtime.HotReloaderKt")
+            val method = cls.getDeclaredMethod("invalidateGroupsWithKey", Int::class.javaPrimitiveType)
+                .apply { isAccessible = true }
+            return { key -> method.invoke(null, key) }
+        } catch (t: Throwable) {
+            Log.w(TAG, "HotReloaderKt.invalidateGroupsWithKey unreachable: ${t.javaClass.simpleName}: ${t.message}")
+        }
+        for (owner in listOf("androidx.compose.runtime.HotReloader", "androidx.compose.runtime.Recomposer")) {
+            try {
+                val companion = Class.forName(owner).getDeclaredField("Companion")
+                    .apply { isAccessible = true }.get(null)
+                val method = companion.javaClass.declaredMethods
+                    .single { it.name.startsWith("invalidateGroupsWithKey") }
+                    .apply { isAccessible = true }
+                return { key -> method.invoke(companion, key) }
+            } catch (t: Throwable) {
+                Log.w(TAG, "$owner\$Companion.invalidateGroupsWithKey unreachable: ${t.javaClass.simpleName}: ${t.message}")
+            }
+        }
+        return null
     }
 
     // Compose runtime internal API, same hook JetBrains desktop hot reload uses.
@@ -52,5 +123,15 @@ object ComposeInvalidator {
     } catch (t: Throwable) {
         Log.w(TAG, "HotReloader reflection failed: ${t.javaClass.simpleName}: ${t.message}")
         false
+    }
+
+    private fun recreateForegroundActivity() {
+        val activity = ActivityTracker.foreground
+        if (activity != null) {
+            Log.w(TAG, "tier3: recreating ${activity.javaClass.simpleName}")
+            activity.recreate()
+        } else {
+            Log.e(TAG, "Reload signalled but no foreground activity to refresh")
+        }
     }
 }

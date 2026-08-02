@@ -10,6 +10,9 @@ gradlePlugin {
     }
 }
 dependencies {
+    // Type access only (ComposeCompilerGradlePluginExtension); must not leak into the plugin's
+    // runtime deps so consumers don't get a transitive compose-compiler-gradle-plugin.
+    compileOnly(libs.compose.compiler.gradle.plugin)
     testImplementation(libs.junit4)
     testImplementation(gradleTestKit())
     testImplementation(kotlin("test"))

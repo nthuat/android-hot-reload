@@ -60,15 +60,34 @@ jclass FindLoadedClass(JNIEnv* env, const char* descriptor) {
   return found;
 }
 
-void NotifyRuntime(JNIEnv* env) {
+// "Ldev/hotreload/sample/feature/GreetingKt;" -> "dev.hotreload.sample.feature.GreetingKt"
+std::string DescriptorToBinaryName(const std::string& descriptor) {
+  std::string name = descriptor;
+  if (!name.empty() && name.front() == 'L') name.erase(0, 1);
+  if (!name.empty() && name.back() == ';') name.pop_back();
+  for (char& c : name) {
+    if (c == '/') c = '.';
+  }
+  return name;
+}
+
+// Called once per LOAD_DEX (one redefined class per message); passes that class's binary name
+// so ComposeInvalidator can look up its group keys for tier-1 invalidation.
+void NotifyRuntime(JNIEnv* env, const std::string& descriptor) {
   jclass cls = FindLoadedClass(env, "Ldev/hotreload/runtime/ComposeInvalidator;");
   if (cls == nullptr) {
     LOGE("ComposeInvalidator not loaded; skipping recompose signal");
     return;
   }
-  jmethodID reload = env->GetStaticMethodID(cls, "reload", "()V");
+  jmethodID reload = env->GetStaticMethodID(cls, "reload", "([Ljava/lang/String;)V");
   if (reload != nullptr) {
-    env->CallStaticVoidMethod(cls, reload);
+    jclass stringClass = env->FindClass("java/lang/String");
+    jstring binaryName = env->NewStringUTF(DescriptorToBinaryName(descriptor).c_str());
+    jobjectArray names = env->NewObjectArray(1, stringClass, binaryName);
+    env->CallStaticVoidMethod(cls, reload, names);
+    env->DeleteLocalRef(names);
+    env->DeleteLocalRef(binaryName);
+    env->DeleteLocalRef(stringClass);
   }
   if (env->ExceptionCheck()) {
     env->ExceptionDescribe();
@@ -153,7 +172,10 @@ void ServeClient(int fd, JNIEnv* env) {
     } else if (cmd == kCmdLoadDex) {
       bool ok = false;
       std::string detail = HandleLoadDex(env, payload, &ok);
-      if (ok) NotifyRuntime(env);
+      if (ok) {
+        size_t nl = payload.find('\n');
+        NotifyRuntime(env, payload.substr(0, nl));
+      }
       SendReply(fd, ok ? kStatusOk : kStatusFail, detail);
       LOGI("LOAD_DEX: %s", detail.c_str());
     } else {
