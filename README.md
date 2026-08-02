@@ -12,15 +12,26 @@ on an API 34 x86_64 emulator; see `e2e/run-e2e.sh`.
 
 ## Quickstart
 
-1. Apply the plugin to your app module (injects the runtime lib into debug builds):
+1. Until artifacts are published to a Maven repo, consume this repo as a Gradle composite
+   build from a checkout — clone `android-hot-reload` somewhere, then in your app project's
+   `settings.gradle.kts`:
+   ```kotlin
+   pluginManagement {
+       repositories { google(); mavenCentral(); gradlePluginPortal() }
+       includeBuild("/path/to/android-hot-reload")
+   }
+   includeBuild("/path/to/android-hot-reload")
+   ```
+   (mirrors `sample/settings.gradle.kts` in this repo, which consumes the tool the same way.)
+2. Apply the plugin to your app module (injects the runtime lib into debug builds):
    ```kotlin
    // app/build.gradle.kts
    plugins {
        id("dev.hotreload")
    }
    ```
-2. Build, install, and launch your debug build as usual.
-3. Point the CLI at your project and package, and let it watch for changes:
+3. Build, install, and launch your debug build as usual.
+4. Point the CLI at your project and package, and let it watch for changes:
    ```bash
    cli/build/install/cli/bin/cli run --project /path/to/your/project --package your.app.package
    ```
@@ -75,6 +86,8 @@ Run `adb logcat -s HotReload` during a reload to see which tier actually fired.
 - `ANDROID_HOME`/`ANDROID_SDK_ROOT` set, with `platform-tools` on it.
 - A debuggable build (JVMTI attach and `RedefineClasses` both require it).
 - Device or emulator API 26+ (JVMTI `RedefineClasses` support).
+- A conventional single top-level application module, default `:app` — override with
+  `--app-module` if your app module has a different Gradle path.
 - Building this repo locally requires JDK 21 (`export JAVA_HOME=$(/usr/libexec/java_home -v 21)`
   before any `./gradlew` call) — Gradle 8.11.1 does not support newer JDKs. CI supplies its own
   JDK 17, which works fine; this is a local-machine-only constraint.

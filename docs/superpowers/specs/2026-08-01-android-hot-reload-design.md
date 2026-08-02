@@ -55,7 +55,28 @@ Four components in one repo (Gradle multi-project):
 Applied to the app's build. Debug variant only: adds the `runtime` library dependency. Zero effect on release builds.
 
 ### cli (Kotlin JVM)
-The daemon loop: file watcher → Gradle tooling API incremental compile of the changed module → content-hash diff of class output dirs against a baseline captured after each cycle → `d8` changed classes into `patch.dex` → `adb push` → socket message to agent → print result.
+The daemon loop: file watcher → Gradle tooling API build of the app module's merge-dex tasks
+(`mergeProjectDexDebug`/`mergeLibDexDebug`; there's no per-module target — Gradle's task graph
+pulls in `compileDebugKotlin` for whichever module actually changed as an upstream dependency,
+so compile errors surface regardless of which module the edit lives in) → content-hash diff of
+class output dirs against a baseline captured after each cycle → extract each changed class
+from AGP's already-merged dex output via D8's `--file-per-class` split → `adb push` → socket
+message to agent → print result, including which reload tier fired.
+
+Extracting from the merged dex rather than dexing each changed class in isolation is a
+correctness requirement, not an optimization: a fresh, standalone `d8` invocation on just one
+`.class` file mints a *different* synthetic-lambda hash (`$r8$lambda$<hash>`, emitted for e.g.
+the bridge method backing every Compose composable's restart lambda) than AGP's own merge-dex
+output for the exact same class — the hash depends on toolchain/build context, not just the
+class bytes. `RedefineClasses` then reports the old-hash method deleted and the new-hash one
+added (`JVMTI_ERROR_UNSUPPORTED_REDEFINITION_METHOD_DELETED`), a spurious incompatible-change
+rejection for an edit ART could otherwise redefine cleanly. AGP's merge-dex tasks reproduce the
+exact same hash across edits (verified empirically: stable per call site, not per edit), so the
+CLI instead locates the changed class inside that already-merged, already-consistent dex output
+and splits just that one class back out with `--file-per-class` — a dex-to-dex repackage that
+mints no new hashes, only re-emits the original bytes. v1 assumes a conventional single
+top-level app module, default `:app` (override with `--app-module`), which both the compile
+step and the dex-extraction step target.
 
 ### agent (C++ JVMTI, arm64 + x86_64)
 Attached once via `adb shell am attach-agent`. Load path matters: SELinux blocks debuggable apps loading agents from `/data/local/tmp` on many Android versions, so the CLI pushes the .so to `/data/local/tmp` then copies it into the app's `code_cache` dir via `run-as` (same trick Android Studio uses); patch dex files travel the same route. The agent listens on an abstract-namespace local socket (reached via `adb forward`). It receives a class descriptor + dex path per changed class, calls `RedefineClasses` with the dex bytes, and reports per-class success/failure back to the CLI. After a successful redefine it signals the runtime lib directly — an in-process JNI call to `ComposeInvalidator.reload()` — no extra IPC.
@@ -78,12 +99,18 @@ Before the first reload: gradle-plugin applied to the app, `assembleDebug` built
 ### One Reload Cycle
 
 1. Save `.kt` → watcher debounce 100 ms
-2. CLI: Gradle tooling API `:module:compileDebugKotlin` (incremental — only the changed module compiles)
-3. Diff class output dirs by content hash → changed `.class` set
-4. `d8` → `patch.dex` → `adb push` → socket message to agent
-5. Agent: `RedefineClasses`, per-class result returned to CLI
+2. CLI: Gradle tooling API build of `:app:mergeProjectDexDebug` + `:app:mergeLibDexDebug`
+   (pulls in `compileDebugKotlin` for whichever module actually changed, and AGP's own
+   dexBuilder tasks, as upstream dependencies of those two)
+3. Diff class output dirs by content hash → changed `.class` set (excluding
+   compiler-generated `$KeyMeta` metadata classes, which never need redefinition — see the
+   `cli` section above)
+4. Extract each changed class from AGP's merged dex output (D8 `--file-per-class` split — not
+   a fresh isolated dex encode; see the `cli` section above for why that would be wrong) →
+   `adb push` → socket message to agent
+5. Agent: `RedefineClasses`, per-class result (plus the tier that fired) returned to CLI
 6. Runtime lib: invalidate groups for redefined composables → recompose; state untouched → preserved
-7. CLI prints `✓ reloaded 2 classes in 1.8s` or the failure reason
+7. CLI prints `✓ reloaded 2 classes in 1.8s [tier1 — remember state preserved]` or the failure reason
 
 ## Error Handling
 
@@ -92,7 +119,11 @@ Reliability is the core goal: the tool must never leave the app in silently-wron
 - **Incompatible change** (new/removed method, field, changed signature, new class): JVMTI returns an error → CLI reports exactly what changed and why it's unsupported, offers one-key full rebuild + reinstall.
 - **Compile error:** Gradle output surfaced as-is; app untouched; watcher keeps running.
 - **Recompose failure** (internal `HotReloader` reflection fails or invalidation throws): fall back to `Activity.recreate()` on the tracked foreground activity — state loss over wrong state.
-- **Device disconnect / dead agent:** CLI health-check ping before each push; one automatic reattach attempt, then surface to user.
+- **Device disconnect / dead agent:** CLI pings once, at `bootstrap` (attach time) — not
+  before every push. A dead agent surfaces as a `DeviceError` when a later cycle's socket
+  connection fails (after the compile step has already run), reported loudly to the user with
+  no attempt to hide or retry through it. There is no automatic reattach in v1; recovery is a
+  manual re-run of `hotreload bootstrap`. Automatic reattach is future work, not implemented.
 - **Multi-device:** v1 targets one device — first found, or `--serial`.
 
 ## Testing
