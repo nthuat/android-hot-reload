@@ -11,6 +11,12 @@ import org.jetbrains.kotlin.compose.compiler.gradle.ComposeCompilerGradlePluginE
  * derives the coordinate from wherever it was itself resolved from (see
  * [HotReloadPlugin.defaultRuntimeCoordinate]) — kept as an escape hatch for setups where
  * derivation can't work, e.g. a repository layout this plugin doesn't recognise.
+ *
+ * Where it lives: whichever project the plugin is *directly* applied to gets its own instance
+ * (root, a single module, or both — each `apply()` call creates one on its own project). When the
+ * plugin runs in coordinator mode (applied at the root), every subproject is configured using the
+ * *root's* extension, so an override set once at the root reaches every module's injected
+ * dependency without each module needing its own `hotreload {}` block.
  */
 abstract class HotReloadExtension {
     abstract val runtimeCoordinate: Property<String>
@@ -20,17 +26,17 @@ class HotReloadPlugin : Plugin<Project> {
     override fun apply(project: Project) {
         val extension = project.extensions.create("hotreload", HotReloadExtension::class.java)
         extension.runtimeCoordinate.convention(defaultRuntimeCoordinate(project))
-        project.plugins.withId("com.android.application") {
-            // Deferred to afterEvaluate: a consumer's `hotreload { runtimeCoordinate.set(...) }`
-            // block runs later in the same script, after this `plugins {}`-block apply().
-            project.afterEvaluate {
-                project.dependencies.add("debugImplementation", extension.runtimeCoordinate.get())
-            }
-            enableKeyMeta(project)
+
+        // Coordinator mode: applied at the root, configure every subproject reactively so
+        // ordering/configuration-time issues don't bite (a subproject's own `com.android.*`
+        // plugin may apply before or after this one runs). This is what makes "apply once at the
+        // root" sufficient — no per-module `plugins {}` block needed anymore.
+        if (project == project.rootProject) {
+            project.subprojects { subproject -> configureIfAndroid(subproject, extension) }
         }
-        // Key-meta generation must run on every composable-bearing module (app AND libraries) —
-        // the JVMTI agent redefines classes in whichever module the edited source lives in.
-        project.plugins.withId("com.android.library") { enableKeyMeta(project) }
+        // Applying directly to a single module (today's style, and still how sample/ does it via
+        // composite build) must keep working unchanged — configure the project itself too.
+        configureIfAndroid(project, extension)
     }
 
     companion object {
@@ -76,6 +82,46 @@ class HotReloadPlugin : Plugin<Project> {
             return file.takeIf { it.isFile }
         }
     }
+}
+
+// Extra-property key marking a project as already configured (dependency added / key-meta
+// enabled), so applying the plugin at both the root (coordinator mode) and directly on a module
+// doesn't do the work twice — see [configureIfAndroid].
+private const val CONFIGURED_MARKER = "dev.thuat.hotreload.configured"
+
+/**
+ * Reacts to whichever of `com.android.application` / `com.android.library` applies to [target],
+ * in whichever order that happens relative to this call (`plugins.withId` fires immediately if
+ * the plugin is already applied, or later when it is). Guarded by [claimConfiguration] so that
+ * applying the hotreload plugin at *both* the root — which reaches every subproject through
+ * [HotReloadPlugin.apply]'s coordinator loop — *and* directly on the module itself still only
+ * adds the runtime dependency / registers the release-strip action once.
+ */
+private fun configureIfAndroid(target: Project, extension: HotReloadExtension) {
+    target.plugins.withId("com.android.application") {
+        if (claimConfiguration(target)) {
+            // Deferred to afterEvaluate: a consumer's `hotreload { runtimeCoordinate.set(...) }`
+            // block runs later — either later in the same module script, or (coordinator mode)
+            // in the root script, which finishes evaluating before this module's afterEvaluate.
+            target.afterEvaluate {
+                target.dependencies.add("debugImplementation", extension.runtimeCoordinate.get())
+            }
+            enableKeyMeta(target)
+        }
+    }
+    // Key-meta generation must run on every composable-bearing module (app AND libraries) —
+    // the JVMTI agent redefines classes in whichever module the edited source lives in.
+    target.plugins.withId("com.android.library") {
+        if (claimConfiguration(target)) enableKeyMeta(target)
+    }
+}
+
+/** True the first time this is called for [target]; false on every subsequent call. */
+private fun claimConfiguration(target: Project): Boolean {
+    val extra = target.extensions.extraProperties
+    if (extra.has(CONFIGURED_MARKER)) return false
+    extra.set(CONFIGURED_MARKER, true)
+    return true
 }
 
 // Top-level function (own synthetic class, not a member of HotReloadPlugin) so that Gradle's

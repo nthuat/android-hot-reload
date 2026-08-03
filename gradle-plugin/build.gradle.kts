@@ -16,5 +16,9 @@ dependencies {
     testImplementation(libs.junit4)
     testImplementation(gradleTestKit())
     testImplementation(kotlin("test"))
+    // Test-only: lets unit tests register a fake "org.jetbrains.kotlin.plugin.compose" plugin
+    // that creates a real ComposeCompilerGradlePluginExtension, so the key-meta flag assertion
+    // exercises the real extension type without needing a full AGP+Kotlin TestKit build.
+    testImplementation(libs.compose.compiler.gradle.plugin)
 }
 kotlin { jvmToolchain(17) }

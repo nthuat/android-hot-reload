@@ -48,25 +48,33 @@ JVMTI agent's `.so`) needs a separate download, since it's not a Maven artifact.
        }
    }
    ```
-2. Apply the plugin to your app module, pinned to a released tag (see [Releases](../../releases)
-   for the latest). No further configuration is needed — the plugin derives the runtime
-   library's coordinate from wherever it resolved *itself* from (same group, same version,
-   artifact `hotreload-runtime`), so it finds the right JitPack coordinate automatically:
+2. Apply the plugin **once, at the root project**, pinned to a released tag (see
+   [Releases](../../releases) for the latest) — that's the only change a multi-module project
+   needs:
    ```kotlin
-   // app/build.gradle.kts
+   // root build.gradle.kts
    plugins {
        id("dev.thuat.hotreload") version "v0.1.1"
    }
    ```
-   (`hotreload.runtimeCoordinate.set(...)` is still available as an override, for repository
-   layouts the plugin can't auto-detect.)
+   Applying it at the root puts the plugin in "coordinator" mode: it reacts to every subproject's
+   own `com.android.application` / `com.android.library` plugin (in whichever order Gradle
+   configures them) and wires each one up automatically — the application module gets the runtime
+   dependency injected into `debugImplementation`, and *every* Android module (app and libraries
+   alike) gets the Compose compiler's function-key metadata enabled. That last part is what makes
+   tier-1 group-key reloads work for library-module composables too, not just the app module's —
+   previously a module you forgot to apply the plugin to would silently fall back to tier 2
+   (whole-composition rebuild, losing `remember` state).
 
-   **Multi-module projects**: apply the plugin to *every* module that contains composables, not
-   just the app module — the plugin is what enables the Compose compiler's function-key metadata,
-   and without it edits to a library module's composables fall back to tier 2 (whole-composition
-   rebuild, losing `remember` state) instead of tier-1 group-key invalidation. Declare the version
-   once in the root build and apply it without a version in each module, otherwise Gradle fails
-   with `gradle-plugin:null`:
+   No further configuration is needed — the plugin derives the runtime library's coordinate from
+   wherever it resolved *itself* from (same group, same version, artifact `hotreload-runtime`), so
+   it finds the right JitPack coordinate automatically. (`hotreload.runtimeCoordinate.set(...)` is
+   still available as a root-level override, for repository layouts the plugin can't auto-detect —
+   set it once at the root and it reaches every module's injected dependency.)
+
+   **Applying it per module still works**, if you'd rather be explicit about which modules opt in.
+   Declare the version once in the root build (`apply false`) and apply it without a version in
+   each module that has composables, otherwise Gradle fails with `gradle-plugin:null`:
    ```kotlin
    // root build.gradle.kts
    plugins { id("dev.thuat.hotreload") version "v0.1.1" apply false }
@@ -74,8 +82,10 @@ JVMTI agent's `.so`) needs a separate download, since it's not a Maven artifact.
    // app/build.gradle.kts, feature/build.gradle.kts, … (each module with composables)
    plugins { id("dev.thuat.hotreload") }
    ```
-   Only the application module gets the runtime dependency injected; library modules just get the
-   compiler flag.
+   Forgetting a module in this style is a silent correctness trap again (see above) — applying
+   once at the root avoids it entirely. Mixing both styles (root *and* some modules) is safe too;
+   the plugin is idempotent, so it won't double-add the dependency or double-configure a module
+   applied both ways.
 3. Build, install, and launch your debug build as usual.
 4. Download the CLI from the [release matching your tag](../../releases), unzip it, and point it
    at your project and package:
