@@ -1,10 +1,29 @@
 package dev.thuat.hotreload.cli
 
 import java.io.Closeable
+import java.net.InetSocketAddress
 import java.net.Socket
 
-class AgentClient(host: String, port: Int) : Closeable {
-    private val socket = Socket(host, port)
+// Connecting to a wedged device's forwarded socket (or one whose agent died mid-request) used to
+// block forever — no connect timeout, no SO_TIMEOUT, so a dead agent hung the CLI exactly like an
+// unbounded adb call did (see ProcessRunner.kt). localhost connect is normally instant; 5s is
+// generous slack for a busy adb server.
+const val DEFAULT_CONNECT_TIMEOUT_MS = 5_000
+// A redefinition round-trip is normally ~100-900ms; the runtime's tier-1 path waits up to 2s
+// internally for the tier string (see ComposeInvalidator.reload). 15s comfortably clears that
+// without falsely reporting a slow-but-working device as dead.
+const val DEFAULT_READ_TIMEOUT_MS = 15_000
+
+class AgentClient(
+    host: String,
+    port: Int,
+    connectTimeoutMs: Int = DEFAULT_CONNECT_TIMEOUT_MS,
+    readTimeoutMs: Int = DEFAULT_READ_TIMEOUT_MS,
+) : Closeable {
+    private val socket = Socket().apply {
+        connect(InetSocketAddress(host, port), connectTimeoutMs)
+        soTimeout = readTimeoutMs
+    }
 
     fun ping(): Reply = request(Protocol.CMD_PING, ByteArray(0))
 

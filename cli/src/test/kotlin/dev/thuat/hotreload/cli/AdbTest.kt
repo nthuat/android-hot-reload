@@ -11,7 +11,7 @@ import kotlin.test.assertTrue
 class AdbTest {
     private class FakeRunner(private val result: ProcessResult = ProcessResult(0, "", "")) : ProcessRunner {
         val calls = mutableListOf<List<String>>()
-        override fun run(args: List<String>): ProcessResult { calls += args; return result }
+        override fun run(args: List<String>, timeoutMs: Long): ProcessResult { calls += args; return result }
     }
 
     @Test

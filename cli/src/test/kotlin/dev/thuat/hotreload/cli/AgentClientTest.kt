@@ -2,9 +2,13 @@ package dev.thuat.hotreload.cli
 
 import org.junit.Test
 import java.net.ServerSocket
+import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import kotlin.concurrent.thread
+import kotlin.system.measureTimeMillis
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import kotlin.test.fail
 
 class AgentClientTest {
     @Test
@@ -57,6 +61,28 @@ class AgentClientTest {
         assertEquals(Protocol.CMD_LOAD_DEX, receivedCmd)
         assertEquals("La/Foo;\n/data/a.dex${Protocol.RECORD_SEP}Lb/Bar;\n/data/b.dex", receivedPayload)
         assertEquals(Protocol.STATUS_OK, reply.status)
+        server.close()
+    }
+
+    // Reproduces the reported hang one layer up from ProcessRunner: a dead/wedged agent that
+    // accepts the TCP connection but never replies used to block Protocol.decodeReply's read
+    // forever (no SO_TIMEOUT at all). A short injected readTimeoutMs keeps this test itself fast
+    // rather than waiting out the real 15s production default.
+    @Test
+    fun `read times out against a server that accepts but never replies, instead of hanging forever`() {
+        val server = ServerSocket(0)
+        thread {
+            runCatching { server.accept() }  // accept the connection, then just sit there
+        }
+        val elapsed = measureTimeMillis {
+            try {
+                AgentClient("localhost", server.localPort, readTimeoutMs = 200).use { it.ping() }
+                fail("expected a SocketTimeoutException")
+            } catch (e: SocketTimeoutException) {
+                // expected — the bound this test verifies
+            }
+        }
+        assertTrue(elapsed < 5_000, "read timeout took far longer than the injected 200ms bound: ${elapsed}ms")
         server.close()
     }
 }

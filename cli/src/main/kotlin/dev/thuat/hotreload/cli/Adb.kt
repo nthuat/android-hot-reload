@@ -54,4 +54,10 @@ class Adb(
     fun appDataDir(pkg: String): String = "/data/data/$pkg"
 
     fun getprop(name: String): String = adb("shell", "getprop", name).stdout.trim()
+
+    // `adb get-state` is a single cheap round trip that reports "device" when ready, "offline"/
+    // "unauthorized" when wedged, or fails outright ("no devices/emulators found") when the
+    // serial is gone entirely — used to fail fast before sinking a full compile into a dead
+    // device (see ReloadOrchestrator's early check in bootstrap()/cycle()).
+    fun getState(): ProcessResult = adb("get-state")
 }

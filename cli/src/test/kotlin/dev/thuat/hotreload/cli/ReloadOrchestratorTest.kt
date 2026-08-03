@@ -43,13 +43,15 @@ class ReloadOrchestratorTest {
     private class SequencedRunner(private val results: List<ProcessResult>) : ProcessRunner {
         val calls = mutableListOf<List<String>>()
         private var i = 0
-        override fun run(args: List<String>): ProcessResult {
+        override fun run(args: List<String>, timeoutMs: Long): ProcessResult {
             calls += args
             val result = results.getOrElse(i) { results.last() }
             i++
             return result
         }
     }
+
+    private val deviceReady = ProcessResult(0, "device\n", "")
 
     // bootstrap() opens a real (loopback) TCP connection for its ping fast-path check — not
     // mocked via ProcessRunner, since it isn't an adb call. Using an OS-assigned free port
@@ -83,6 +85,7 @@ class ReloadOrchestratorTest {
 
         val runner = SequencedRunner(
             listOf(
+                deviceReady,                                            // get-state (device ready check)
                 ProcessResult(0, "1234\n", ""),                        // pidof (isAppRunning)
                 ProcessResult(0, "", ""),                              // adb forward
                 ProcessResult(0, "x86_64\n", ""),                      // getprop abi
@@ -99,8 +102,8 @@ class ReloadOrchestratorTest {
             "expected the adb stderr to surface in the DeviceError reason, got: ${outcome.reason}",
         )
         assertFalse(Files.exists(projectDir.resolve(".hotreload/baseline.txt")))
-        // Only pidof, forward, getprop, and the failing push should have run.
-        assertTrue(runner.calls.size == 4, "expected exactly 4 adb calls before bailing, got ${runner.calls.size}: ${runner.calls}")
+        // Only get-state, pidof, forward, getprop, and the failing push should have run.
+        assertTrue(runner.calls.size == 5, "expected exactly 5 adb calls before bailing, got ${runner.calls.size}: ${runner.calls}")
     }
 
     @Test
@@ -113,6 +116,7 @@ class ReloadOrchestratorTest {
 
         val runner = SequencedRunner(
             listOf(
+                deviceReady,                                          // get-state
                 ProcessResult(0, "1234\n", ""),                     // pidof
                 ProcessResult(0, "", ""),                           // adb forward
                 ProcessResult(0, "arm64-v8a\n", ""),                 // getprop abi
@@ -126,6 +130,78 @@ class ReloadOrchestratorTest {
 
         assertTrue(outcome is CycleOutcome.DeviceError)
         assertTrue((outcome as CycleOutcome.DeviceError).reason.contains("run-as: package not debuggable"))
+        assertFalse(Files.exists(projectDir.resolve(".hotreload/baseline.txt")))
+    }
+
+    // Replays the reproduced-live hang: the device went `offline` mid-session and every adb call
+    // (including `adb shell pidof`) would otherwise block forever. `adb get-state` is checked
+    // first, before any adb calls that would talk to the (dead) app, so bootstrap fails fast.
+    @Test
+    fun `bootstrap fails fast with DeviceError when device is offline, before any other adb call`() {
+        val projectDir = tmp.newFolder("project-offline").toPath()
+        val agentSoDir = tmp.newFolder("agent-so-offline").toPath()
+
+        val runner = SequencedRunner(listOf(ProcessResult(0, "offline\n", "")))
+        val orchestrator = ReloadOrchestrator(configFor(projectDir, agentSoDir), runner)
+
+        val outcome = orchestrator.bootstrap()
+
+        assertTrue(outcome is CycleOutcome.DeviceError)
+        assertTrue(
+            (outcome as CycleOutcome.DeviceError).reason.contains("offline"),
+            "expected the device state to surface in the DeviceError reason, got: ${outcome.reason}",
+        )
+        assertFalse(Files.exists(projectDir.resolve(".hotreload/baseline.txt")))
+        assertEquals(1, runner.calls.size, "expected only the get-state check to run, got: ${runner.calls}")
+    }
+
+    // Same early exit, but on cycle() — a device can die *between* cycles (exactly what
+    // happened live: the emulator wedged mid-session, after a previous successful bootstrap).
+    @Test
+    fun `cycle fails fast with DeviceError when device is offline, before compiling`() {
+        val projectDir = tmp.newFolder("project-offline-cycle").toPath()
+        val agentSoDir = tmp.newFolder("agent-so-offline-cycle").toPath()
+
+        val runner = SequencedRunner(listOf(ProcessResult(0, "offline\n", "")))
+        val orchestrator = ReloadOrchestrator(configFor(projectDir, agentSoDir), runner)
+
+        val outcome = orchestrator.cycle(projectDir.resolve("app/src/main/kotlin/Foo.kt"))
+
+        assertTrue(outcome is CycleOutcome.DeviceError)
+        assertTrue((outcome as CycleOutcome.DeviceError).reason.contains("offline"))
+        assertEquals(1, runner.calls.size, "expected only the get-state check to run, got: ${runner.calls}")
+    }
+
+    // Replays the actual reproduced hang one step further in: a wedged adb call (e.g. `adb push`
+    // against an offline device) used to block RealProcessRunner forever with no timeout at all.
+    // Simulated here via a fake ProcessRunner that reports a timed-out call, the same shape
+    // RealProcessRunner now returns once its own waitFor(timeout) expires (see ProcessRunner.kt).
+    @Test
+    fun `bootstrap reports DeviceError naming the timeout when an adb call times out, and does not save baseline`() {
+        val projectDir = tmp.newFolder("project-timeout").toPath()
+        val agentSoDir = tmp.newFolder("agent-so-timeout").toPath()
+        val abiDir = agentSoDir.resolve("x86_64")
+        Files.createDirectories(abiDir)
+        Files.write(abiDir.resolve("libhotreload_agent.so"), byteArrayOf(1, 2, 3))
+
+        val runner = SequencedRunner(
+            listOf(
+                deviceReady,                                    // get-state
+                ProcessResult(0, "1234\n", ""),                 // pidof
+                ProcessResult(0, "", ""),                       // adb forward
+                ProcessResult(0, "x86_64\n", ""),                // getprop abi
+                ProcessResult(-1, "", "", timedOut = true),      // push agent.so -> TIMES OUT
+            )
+        )
+        val orchestrator = ReloadOrchestrator(configFor(projectDir, agentSoDir), runner)
+
+        val outcome = orchestrator.bootstrap()
+
+        assertTrue(outcome is CycleOutcome.DeviceError)
+        assertTrue(
+            (outcome as CycleOutcome.DeviceError).reason.contains("timed out"),
+            "expected the DeviceError to name the timeout, got: ${outcome.reason}",
+        )
         assertFalse(Files.exists(projectDir.resolve(".hotreload/baseline.txt")))
     }
 

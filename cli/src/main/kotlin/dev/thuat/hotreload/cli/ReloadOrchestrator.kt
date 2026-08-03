@@ -1,5 +1,6 @@
 package dev.thuat.hotreload.cli
 
+import java.net.SocketTimeoutException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -87,6 +88,7 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
     private fun allClassDirs() = resolver.allModules().flatMap(resolver::classDirsOf)
 
     fun bootstrap(): CycleOutcome {
+        deviceNotReadyError()?.let { return it }
         if (!adb.isAppRunning(config.pkg)) {
             return CycleOutcome.DeviceError("${config.pkg} is not running — launch the app first")
         }
@@ -139,7 +141,24 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
     private fun pingAgent(): Reply? =
         runCatching { AgentClient("localhost", config.localPort).use { it.ping() } }.getOrNull()
 
+    // Bounds bootstrap()/cycle() to a cheap, fast-failing check before any compile/adb-transfer
+    // work: `adb get-state` fails outright when the serial is gone, and reports "offline"/
+    // "unauthorized" for a wedged device without ever touching the app.
+    private fun deviceNotReadyError(): CycleOutcome.DeviceError? {
+        val result = adb.getState()
+        result.failureOrNull("adb get-state")?.let { return it }
+        val state = result.stdout.trim()
+        return if (state == "device") null else CycleOutcome.DeviceError(
+            "device not ready (state: ${state.ifEmpty { "unknown" }}) — check `adb devices`, " +
+                "and re-run `bootstrap` after restarting the app"
+        )
+    }
+
     fun cycle(changedFile: Path): CycleOutcome {
+        // A device can die between cycles (this is exactly the bug that motivated this check —
+        // an emulator went offline mid-session and the CLI hung indefinitely instead of failing
+        // fast). Cheap enough to check before sinking a full compile into a dead device.
+        deviceNotReadyError()?.let { return it }
         val start = System.currentTimeMillis()
         resolver.moduleOf(changedFile)
             ?: return CycleOutcome.CompileError("cannot map $changedFile to a gradle module")
@@ -218,7 +237,7 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         t = System.currentTimeMillis()
         val reply = runCatching {
             AgentClient("localhost", config.localPort).use { it.loadDex(records) }
-        }.getOrElse { return CycleOutcome.DeviceError("agent connection failed: ${it.message}") }
+        }.getOrElse { return CycleOutcome.DeviceError(agentFailureMessage(it)) }
         val redefineMs = System.currentTimeMillis() - t
 
         val phaseMillis = linkedMapOf(
@@ -256,10 +275,26 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
 // cycle's device-side state (agent binary, or a stale dex) is left in place while the CLI has
 // already moved on in its own bookkeeping — the exact silent-stale-code hole this closes.
 // Non-zero always maps to DeviceError with the command's stderr (falling back to stdout, since
-// some adb failures write there instead) so it's surfaced loudly rather than swallowed.
-private fun ProcessResult.failureOrNull(action: String): CycleOutcome.DeviceError? =
-    if (exitCode != 0) {
-        CycleOutcome.DeviceError("$action failed (exit $exitCode): ${stderr.trim().ifEmpty { stdout.trim() }}")
+// some adb failures write there instead) so it's surfaced loudly rather than swallowed. A timed
+// out call (see ProcessRunner.DEFAULT_ADB_TIMEOUT_MS) gets its own message naming the timeout
+// rather than a meaningless exit code — this is the fix for the hang reproduced live: adb wedged
+// against an offline device used to block forever with no output, no error, no timeout.
+private fun ProcessResult.failureOrNull(action: String): CycleOutcome.DeviceError? = when {
+    timedOut -> CycleOutcome.DeviceError(
+        "$action timed out after ${DEFAULT_ADB_TIMEOUT_MS / 1000}s — device may be offline or " +
+            "unresponsive; check `adb devices`, and re-run `bootstrap` after restarting the app"
+    )
+    exitCode != 0 -> CycleOutcome.DeviceError("$action failed (exit $exitCode): ${stderr.trim().ifEmpty { stdout.trim() }}")
+    else -> null
+}
+
+// Distinguishes an agent-socket timeout (device/app alive but the agent never replied within
+// DEFAULT_READ_TIMEOUT_MS) from any other connection failure (e.g. nothing listening because the
+// agent isn't attached), so the user gets a message naming which side stalled.
+private fun agentFailureMessage(cause: Throwable): String =
+    if (cause is SocketTimeoutException) {
+        "agent socket timed out after ${DEFAULT_READ_TIMEOUT_MS / 1000}s — device/app may be " +
+            "unresponsive; check `adb devices`, and re-run `bootstrap` after restarting the app"
     } else {
-        null
+        "agent connection failed: ${cause.message}"
     }
