@@ -112,7 +112,10 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         val abi = adb.getprop("ro.product.cpu.abi")
         val so = config.agentSoDir.resolve(abi).resolve("libhotreload_agent.so")
         if (!Files.exists(so)) {
-            return CycleOutcome.DeviceError("agent .so for abi '$abi' not found at $so — run ./gradlew :agent:assembleDebug")
+            return CycleOutcome.DeviceError(
+                "agent .so for abi '$abi' not found at $so\n" +
+                    "  → rebuild the tool with ./gradlew :cli:installDist, or pass --agent-so-dir <dir>"
+            )
         }
 
         adb.push(so, "/data/local/tmp/hotreload/agent.so").failureOrNull("push agent.so")?.let { return it }

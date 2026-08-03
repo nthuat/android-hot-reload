@@ -2,6 +2,7 @@ package dev.thuat.hotreload.cli
 
 import org.junit.Test
 import java.nio.file.Paths
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -44,5 +45,34 @@ class MainTest {
     @Test
     fun `a nested src dir several levels deep is watchable`() {
         assertTrue(isWatchableDir(projectDir.resolve("feature/src/main/kotlin/pkg"), projectDir))
+    }
+}
+
+// The bug this guards against: the old default resolved relative to the process's CWD, which
+// only happened to work when the CLI was launched from the tool checkout itself — the documented
+// workflow launches it from the *consumer* project dir instead, so that default silently pointed
+// at a directory inside the consumer's tree that never contains the agent .so.
+class ResolveAgentSoDirTest {
+    private val cwd = Paths.get("/home/dev/some-consumer-project")
+
+    @Test
+    fun `hotreload home property present resolves to home slash agent`() {
+        val result = resolveAgentSoDir(explicit = null, homeEnv = "/opt/hotreload-cli", cwd = cwd)
+        assertEquals(Paths.get("/opt/hotreload-cli/agent"), result)
+    }
+
+    @Test
+    fun `hotreload home property absent falls back to cwd-relative dev-checkout path`() {
+        val result = resolveAgentSoDir(explicit = null, homeEnv = null, cwd = cwd)
+        assertEquals(
+            cwd.resolve("agent/build/intermediates/merged_native_libs/debug/mergeDebugNativeLibs/out/lib"),
+            result,
+        )
+    }
+
+    @Test
+    fun `explicit agent-so-dir wins even when hotreload home property is set`() {
+        val result = resolveAgentSoDir(explicit = "/custom/dir", homeEnv = "/opt/hotreload-cli", cwd = cwd)
+        assertEquals(Paths.get("/custom/dir"), result)
     }
 }

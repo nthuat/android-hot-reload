@@ -12,14 +12,17 @@ on an API 34 x86_64 emulator; see `e2e/run-e2e.sh`.
 
 ## Quickstart
 
-1. Clone `android-hot-reload` somewhere, then publish it to your local Maven repo:
+1. Clone `android-hot-reload` somewhere, then publish it to your local Maven repo and build the
+   CLI:
    ```bash
    cd /path/to/android-hot-reload
    export JAVA_HOME=$(/usr/libexec/java_home -v 21)  # see Requirements
-   ./gradlew publishToMavenLocal
+   ./gradlew publishToMavenLocal :cli:installDist
    ```
-   This publishes both consumer-facing modules: the `dev.thuat.hotreload` Gradle plugin
-   (`gradle-plugin`) and the runtime library (`dev.thuat:hotreload-runtime`). Re-run it after
+   `publishToMavenLocal` publishes both consumer-facing modules: the `dev.thuat.hotreload`
+   Gradle plugin (`gradle-plugin`) and the runtime library (`dev.thuat:hotreload-runtime`).
+   `:cli:installDist` builds the CLI with the JVMTI agent's `.so` files bundled inside its own
+   install tree, so it finds them automatically — no `--agent-so-dir` needed. Re-run both after
    pulling changes to the tool.
 2. In your app project's `settings.gradle.kts`, add `mavenLocal()` to both repository blocks:
    ```kotlin
