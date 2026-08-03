@@ -19,6 +19,37 @@ and runs on every push (see `.github/workflows/ci.yml`).
 
 ## Quickstart (consuming the published tool)
 
+Only the CLI (which bundles the JVMTI agent's `.so`) needs a separate download, since it's not a
+Maven artifact — see step 4 below in either path.
+
+### Maven Central (once `v0.1.2` is published)
+
+> **Not live yet.** `dev.thuat:gradle-plugin` and `dev.thuat:hotreload-runtime` are not on Maven
+> Central as of this writing — the metadata, signing, and `publishToMavenLocal` plumbing for it
+> are in place (see [`docs/releasing.md`](docs/releasing.md)), but the maintainer hasn't run the
+> actual publish yet. Use the [JitPack path](#jitpack-works-today) below until this note is
+> removed. Once `0.1.2` is live, this will be the primary way to consume the tool — plain
+> `mavenCentral()` resolution, no JitPack `resolutionStrategy` workaround needed, since plugin
+> markers publish natively to Central.
+
+1. `google(); mavenCentral(); gradlePluginPortal()` in `pluginManagement.repositories` and
+   `google(); mavenCentral()` in `dependencyResolutionManagement.repositories` — the defaults
+   `settings.gradle.kts` already has for a fresh Android project, nothing extra to add.
+2. Apply the plugin at the root project, pinned to `0.1.2` (same coordinator-mode behavior,
+   per-module override, etc. described in the JitPack path below — only the version string and
+   the absent JitPack repo differ):
+   ```kotlin
+   // root build.gradle.kts
+   plugins {
+       id("dev.thuat.hotreload") version "0.1.2"
+   }
+   ```
+3. Build, install, and launch your debug build as usual.
+4. Download the CLI from the [release matching your tag](../../releases), unzip it, and run
+   `./bin/cli run --project /path/to/your/project --package your.app.package` as described below.
+
+### JitPack (works today)
+
 The Gradle plugin and the runtime library are published via [JitPack](https://jitpack.io/#nthuat/android-hot-reload)
 — no need to clone or build this repo just to *use* the tool. Only the CLI (which bundles the
 JVMTI agent's `.so`) needs a separate download, since it's not a Maven artifact.
@@ -121,8 +152,8 @@ dependencyResolutionManagement {
 }
 ```
 Apply the plugin the same way as the JitPack quickstart (`id("dev.thuat.hotreload") version
-"0.1.0-SNAPSHOT"`), but skip the `hotreload { runtimeCoordinate.set(...) }` override — the
-plugin's built-in default already points at the `dev.thuat` coordinate mavenLocal just published.
+"0.1.2"`), but skip the `hotreload { runtimeCoordinate.set(...) }` override — the plugin's
+built-in default already points at the `dev.thuat` coordinate mavenLocal just published.
 
 **Composite build** — if you want changes picked up without a `publishToMavenLocal` round-trip
 each time:
