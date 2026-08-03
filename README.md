@@ -7,8 +7,15 @@ design rationale and the class-redefinition constraints it works within are in t
 
 ## Status
 
-v1: composable **body** reloads only (see the compatibility table below). Verified end-to-end
-on an API 34 x86_64 emulator; see `e2e/run-e2e.sh`.
+v1 (`v0.1.0`): composable **body** reloads only — see the compatibility table below for exactly
+what is and isn't supported.
+
+Verified end to end on both an API 34 x86_64 emulator and a physical arm64 device (Samsung
+SM-F731B, Android 15), against this repo's `sample/` project and a real third-party multi-module
+Compose app. Typical reload on that real app is ~4s (`compile 2.1s · dex 0.9s · push 0.3s ·
+redefine 0.1s`), with `remember` state preserved outside the edited file. The automated
+end-to-end test — golden path plus the incompatible-change rejection path — is `e2e/run-e2e.sh`
+and runs on every push (see `.github/workflows/ci.yml`).
 
 ## Quickstart (consuming the published tool)
 
