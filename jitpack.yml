@@ -1,0 +1,9 @@
+jdk:
+  - openjdk17
+install:
+  # Consumers only need the Gradle plugin and the runtime lib from Maven — the CLI ships the
+  # agent .so pre-built inside its own distZip, so JitPack must never touch :agent (needs
+  # NDK+CMake, which its build image doesn't reliably provide) or :cli. --configure-on-demand
+  # keeps Gradle from even *configuring* those two projects: verified locally that with this
+  # flag, only :gradle-plugin and :hotreload-runtime get evaluated for this task set.
+  - ./gradlew --configure-on-demand :gradle-plugin:publishToMavenLocal :hotreload-runtime:publishToMavenLocal
