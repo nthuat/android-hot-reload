@@ -55,35 +55,32 @@ Two things: one line in your Gradle build, and the CLI binary.
    Forgetting a module in this style is the silent trap described above, so root application is
    safer. Mixing both is fine — the plugin is idempotent and won't double-configure a module.
 2. Build, install, and launch your debug build as usual.
-3. Get the CLI — two ways, both fetch the same `cli.zip` (17.7 MB, bundles the JVMTI agent's
-   `.so` for arm64-v8a and x86_64):
+3. Get the CLI (17.7 MB, bundles the JVMTI agent's `.so` for arm64-v8a and x86_64):
 
-   **Gradle task (recommended)** — downloads the release matching *this project's applied plugin
-   version*, so the CLI can never drift from the plugin:
-   ```bash
-   ./gradlew hotReloadInstallCli
-   ```
-   Unpacks to `build/hotreload/cli/` and prints the exact command to run, with your project path
-   and `applicationId` filled in. Re-running is a no-op if the matching version is already there.
-
-   **Install script** — for a CLI that isn't tied to any one Gradle project (e.g. to use across
-   several apps), installs the latest release to `~/.local/share/hotreload/<version>/` and
-   symlinks `~/.local/bin/hotreload`:
    ```bash
    curl -fsSL https://raw.githubusercontent.com/nthuat/android-hot-reload/main/install.sh | sh
    ```
-   Pin a specific version with `HOTRELOAD_VERSION=v0.1.2 curl ... | sh`. Safe to re-run.
+   Installs the latest release to `~/.local/share/hotreload/<version>/` and symlinks
+   `~/.local/bin/hotreload`. Safe to re-run — it upgrades in place. Pin a version with
+   `HOTRELOAD_VERSION=v0.1.2 curl ... | sh`.
 
-   Either way, point the CLI at your project and package:
+   Then point it at your project and package:
    ```bash
-   ./build/hotreload/cli/bin/cli run --project /path/to/your/project --package your.app.package
+   hotreload run --project /path/to/your/project --package your.app.package
    ```
    Edit a composable, save — the running app updates in place. `bootstrap` (single attach) and
    `cycle --file path/to/File.kt` (single reload) are also available for scripting. Requires JDK
-   17+ on `PATH`/`JAVA_HOME`; the CLI bundles the JVMTI agent's `.so` for both ABIs, so there is
-   no `--agent-so-dir` to set.
+   17+ on `PATH`/`JAVA_HOME`; there is no `--agent-so-dir` to set.
 
-   (Manual fallback: grab `cli.zip` from the [latest release](../../releases) yourself and unzip it.)
+   <details>
+   <summary>Other ways to get it</summary>
+
+   **Gradle task** — `./gradlew hotReloadInstallCli` downloads the release matching *this
+   project's applied plugin version*, so the CLI can't drift from the plugin, and unpacks it to
+   `build/hotreload/cli/`. Requires plugin **0.1.3+**; not available in the published `0.1.2`.
+
+   **Manual** — grab `cli.zip` from the [latest release](../../releases) and unzip it.
+   </details>
 
 ### Alternative: building from source (hacking on the tool itself)
 
