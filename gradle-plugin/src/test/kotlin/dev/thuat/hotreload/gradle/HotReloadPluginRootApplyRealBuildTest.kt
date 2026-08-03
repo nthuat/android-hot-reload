@@ -129,7 +129,7 @@ class HotReloadPluginRootApplyRealBuildTest {
             .withArguments(":app:printHotReloadFacts", ":feature:printHotReloadFacts", ":plain:printHotReloadFacts")
             .build()
 
-        assertTrue(result.output.contains("APP_DEPS=dev.thuat:hotreload-runtime:0.1.0-SNAPSHOT"), result.output)
+        assertTrue(result.output.contains("APP_DEPS=dev.thuat:hotreload-runtime:0.1.2"), result.output)
         assertTrue(result.output.contains("FEATURE_DEPS="), result.output)
         assertTrue(!result.output.contains("FEATURE_DEPS=dev.thuat"), result.output)
         assertTrue(result.output.contains("PLAIN_HAS_DEBUGIMPL=false"), result.output)

@@ -1,6 +1,10 @@
-plugins { alias(libs.plugins.android.library); alias(libs.plugins.kotlin.android); `maven-publish` }
+plugins {
+    alias(libs.plugins.android.library)
+    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.vanniktech.maven.publish)
+}
 group = "dev.thuat"
-version = "0.1.0-SNAPSHOT"
+version = "0.1.2"
 android {
     namespace = "dev.thuat.hotreload.runtime"
     compileSdk = 35
@@ -10,26 +14,64 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    // Publish one variant, unqualified by build type, so it resolves for both
-    // debugImplementation and releaseImplementation consumers (AGP strips the build-type
-    // attribute from single-variant publications).
-    publishing { singleVariant("release") }
+    // Publishing (single "release" variant, unqualified by build type so it resolves for both
+    // debugImplementation and releaseImplementation consumers) plus the release/sources/javadoc
+    // jar publication is handled by com.vanniktech.maven.publish, which auto-detects
+    // com.android.library and configures an AndroidSingleVariantLibrary("release") publication.
 }
 dependencies {
     // compileOnly: the app supplies its own Compose runtime; we only reflect into it
     compileOnly(platform(libs.compose.bom))
     compileOnly("androidx.compose.runtime:runtime")
 }
-// AGP creates the "release" component during afterEvaluate; the publication must be
-// registered after that, not eagerly at script evaluation time.
-afterEvaluate {
-    publishing {
-        publications {
-            create<MavenPublication>("release") {
-                // artifactId defaults to project.name, renamed to "hotreload-runtime" in
-                // settings.gradle.kts — single source of truth for the published coordinate.
-                from(components["release"])
+
+mavenPublishing {
+    publishToMavenCentral()
+
+    // artifactId is "hotreload-runtime" (not the directory name "runtime") — set in
+    // settings.gradle.kts as the single source of truth for the published coordinate.
+    coordinates(group.toString(), "hotreload-runtime", version.toString())
+    pom {
+        name.set("Android Hot Reload Runtime")
+        description.set(
+            "In-app runtime (a ContentProvider + reflection hook into Jetpack Compose's " +
+                "HotReloader) that the android-hot-reload Gradle plugin injects into debug " +
+                "builds so JVMTI-redefined classes trigger a recomposition.",
+        )
+        // Shared metadata identical to :gradle-plugin's pom {} — Central rejects incomplete
+        // POMs, every field below is mandatory. Duplicated rather than factored into a shared
+        // `apply(from = ...)` script: Kotlin DSL scripts loaded that way don't see plugin classes
+        // brought in via the enclosing script's `plugins {}` block, so `configure<MavenPublishBaseExtension>`
+        // can't resolve there — see gradle-plugin/build.gradle.kts for the twin of this block.
+        url.set("https://github.com/nthuat/android-hot-reload")
+        licenses {
+            license {
+                name.set("The Apache License, Version 2.0")
+                url.set("https://www.apache.org/licenses/LICENSE-2.0.txt")
+                distribution.set("repo")
             }
         }
+        developers {
+            developer {
+                id.set("nthuat")
+                name.set("Thuat Nguyen")
+                email.set("thuat26.ng@gmail.com")
+            }
+        }
+        scm {
+            url.set("https://github.com/nthuat/android-hot-reload")
+            connection.set("scm:git:git://github.com/nthuat/android-hot-reload.git")
+            developerConnection.set("scm:git:ssh://git@github.com/nthuat/android-hot-reload.git")
+        }
+    }
+
+    // GPG signing is mandatory for Central, but must not block contributors who lack a key:
+    // signAllPublications() marks signing as REQUIRED for every non-SNAPSHOT version (fails the
+    // build if no signatory is configured), so it must only be called when key material is
+    // actually present. ORG_GRADLE_PROJECT_signingInMemoryKey (or its gradle.properties
+    // equivalent, signingInMemoryKey) is only ever set in CI/release environments, so a bare
+    // `./gradlew publishToMavenLocal` checkout stays signature-free and keeps working.
+    if (project.hasProperty("signingInMemoryKey")) {
+        signAllPublications()
     }
 }
