@@ -26,6 +26,12 @@ sealed class CycleOutcome {
         val millis: Long,
         val tier: String? = null,
         val skipped: List<String> = emptyList(),
+        // Per-phase wall time for this cycle, insertion-ordered (compile, diff, dex, push,
+        // redefine) — empty for bootstrap's synthetic Reloaded(0ms) result. Diagnostic-only
+        // (see Main.kt's report()); lets a slow cycle be attributed to a phase without
+        // guesswork instead of re-deriving it from scratch each time (see F1: a redundant
+        // per-class D8 split loop hid behind one 24s number until this was measured directly).
+        val phaseMillis: Map<String, Long> = emptyMap(),
     ) : CycleOutcome()
     data class CompileError(val output: String) : CycleOutcome()
     data class Incompatible(val reason: String) : CycleOutcome()
@@ -138,11 +144,15 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         resolver.moduleOf(changedFile)
             ?: return CycleOutcome.CompileError("cannot map $changedFile to a gradle module")
 
+        var t = System.currentTimeMillis()
         val compileResult = compiler.compile()
+        val compileMs = System.currentTimeMillis() - t
         if (!compileResult.success) return CycleOutcome.CompileError(compileResult.output)
 
+        t = System.currentTimeMillis()
         val current = differ.snapshot(allClassDirs())
         val diff = differ.diff(store.load(), current)
+        val diffMs = System.currentTimeMillis() - t
         if (diff.added.isNotEmpty() || diff.removed.isNotEmpty()) {
             return CycleOutcome.Incompatible(
                 "structural change (added: ${diff.added}, removed: ${diff.removed}) — full rebuild needed"
@@ -166,6 +176,16 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         if (toRedefine.isEmpty()) return CycleOutcome.NoChanges
 
         val dexDir = config.projectDir.resolve(".hotreload/dex")
+        // Batch call: splits each merged-dex bucket at most once for the whole cycle instead of
+        // once per changed class (see DexPackager.dexClasses doc — this is F1's fix, was ~20
+        // redundant full-bucket D8 splits per cycle). A class dexer.dexClasses can't find throws
+        // (uncaught here, same as the old per-class dexClass()'s behavior) — matches today's
+        // "missing class surfaces as an error" contract rather than a soft DeviceError.
+        t = System.currentTimeMillis()
+        val dexed = dexer.dexClasses(toRedefine, dexDir)
+        val dexMs = System.currentTimeMillis() - t
+
+        t = System.currentTimeMillis()
         val records = mutableListOf<Pair<String, String>>()
         // Push every dex file first, THEN send one LOAD_DEX for the whole batch (see
         // agentSocketName / Protocol.RECORD_SEP docs): the agent redefines all of them in one
@@ -175,7 +195,7 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         // back — which is exactly the "never leaves the app corrupted" guarantee this tool
         // promises not to break.
         for (changed in toRedefine) {
-            val dex = dexer.dexClass(changed, dexDir)
+            val dex = dexed.getValue(changed)
             // Content-hash-prefixed device filename: guarantees this cycle's dex never
             // silently reuses a path a previous, possibly-failed cycle already wrote. Without
             // this, a failed push/copy below (or even before F1's exit-code checks existed at
@@ -193,10 +213,21 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
             val devicePath = "${adb.appDataDir(config.pkg)}/code_cache/hotreload/$deviceName"
             records += changed.descriptor to devicePath
         }
+        val pushMs = System.currentTimeMillis() - t
 
+        t = System.currentTimeMillis()
         val reply = runCatching {
             AgentClient("localhost", config.localPort).use { it.loadDex(records) }
         }.getOrElse { return CycleOutcome.DeviceError("agent connection failed: ${it.message}") }
+        val redefineMs = System.currentTimeMillis() - t
+
+        val phaseMillis = linkedMapOf(
+            "compile" to compileMs,
+            "diff" to diffMs,
+            "dex" to dexMs,
+            "push" to pushMs,
+            "redefine" to redefineMs,
+        )
 
         return when (reply.status) {
             Protocol.STATUS_OK -> {
@@ -208,6 +239,7 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
                     millis = System.currentTimeMillis() - start,
                     tier = parseTier(reply.detail),
                     skipped = skipped.map { it.binaryName },
+                    phaseMillis = phaseMillis,
                 )
             }
             Protocol.STATUS_ERROR -> CycleOutcome.DeviceError(reply.detail)

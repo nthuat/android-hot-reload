@@ -97,6 +97,16 @@ private fun summarizeSkipped(skipped: List<String>): String {
     return if (extra > 0) "$shown, +$extra more" else shown
 }
 
+// Compact per-phase breakdown appended to the reload line — always on rather than behind a
+// flag, so a slow cycle is diagnosable without having to know to ask for it (see F1: a 24s
+// cycle looked like one opaque number until this was measured phase-by-phase). Empty for
+// bootstrap's synthetic Reloaded(0ms, phaseMillis = emptyMap()) result, which prints nothing.
+private fun formatPhaseTimings(phaseMillis: Map<String, Long>): String {
+    if (phaseMillis.isEmpty()) return ""
+    val parts = phaseMillis.entries.joinToString(" · ") { (phase, ms) -> "$phase %.1fs".format(ms / 1000.0) }
+    return " ($parts)"
+}
+
 private fun report(outcome: CycleOutcome) {
     when (outcome) {
         is CycleOutcome.Reloaded -> {
@@ -111,7 +121,10 @@ private fun report(outcome: CycleOutcome) {
                 )
             } else {
                 val tierSuffix = outcome.tier?.let { " [$it — ${tierGuarantee[it] ?: "unknown"}]" } ?: ""
-                println("✓ reloaded ${outcome.classes.size} class(es) in ${outcome.millis}ms$tierSuffix: ${outcome.classes.joinToString()}")
+                println(
+                    "✓ reloaded ${outcome.classes.size} class(es) in ${outcome.millis}ms$tierSuffix: " +
+                        "${outcome.classes.joinToString()}${formatPhaseTimings(outcome.phaseMillis)}"
+                )
                 if (outcome.skipped.isNotEmpty()) {
                     println(
                         "  ⚠ skipped ${outcome.skipped.size} not-yet-loaded class(es), using the installed APK's " +

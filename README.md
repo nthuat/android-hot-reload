@@ -86,6 +86,20 @@ Each reload picks the strongest tier that succeeds, logged at tag `HotReload`:
 
 Run `adb logcat -s HotReload` during a reload to see which tier actually fired.
 
+### Phase timings
+
+Every successful reload line ends with a compact per-phase breakdown — `compile`, `diff`
+(baseline snapshot/diff), `dex` (splitting a changed class back out of AGP's merged dex
+output), `push` (adb push + run-as copy), `redefine` (the agent round trip) — e.g.:
+
+```
+✓ reloaded 1 class(es) in 1980ms [tier1 — remember state preserved]: com.example.FooKt
+  (compile 0.8s · diff 0.0s · dex 0.7s · push 0.4s · redefine 0.1s)
+```
+
+Always on, no flag needed — a slow cycle is diagnosable straight from its normal output instead
+of needing to be re-measured after the fact.
+
 ## How it works
 
 1. The Gradle plugin injects a small runtime lib (a `ContentProvider` + reflection hook into
