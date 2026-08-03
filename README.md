@@ -211,7 +211,12 @@ edited file survives.
 
 - `ANDROID_HOME`/`ANDROID_SDK_ROOT` set, with `platform-tools` on it.
 - A debuggable build (JVMTI attach and `RedefineClasses` both require it).
-- Device or emulator API 26+ (JVMTI `RedefineClasses` support).
+- Device or emulator API 26+ (JVMTI `RedefineClasses` support); the app's own `minSdk` can be
+  lower (verified down to 23) — the API 26 floor is the device attaching the agent, not the APK.
+- AGP 8.x (Kotlin-Gradle-Plugin Kotlin compilation) or AGP 9.x (built-in Kotlin compiler) — the
+  CLI's class-output discovery (`ModuleResolver.classDirsOf`) probes both layouts and picks
+  whichever exists. Verified against AGP 8.7.3/Kotlin 2.1.0 (this repo's own sample) and AGP
+  9.3.1/Kotlin 2.4.10/Gradle 9.5 (Google's `compose-samples/JetNews`).
 - A conventional single top-level application module, default `:app` — override with
   `--app-module` if your app module has a different Gradle path.
 - Building this repo locally requires JDK 21 (`export JAVA_HOME=$(/usr/libexec/java_home -v 21)`

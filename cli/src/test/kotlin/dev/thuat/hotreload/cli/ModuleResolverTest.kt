@@ -5,7 +5,9 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.nio.file.Files
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class ModuleResolverTest {
     @get:Rule val tmp = TemporaryFolder()
@@ -34,13 +36,51 @@ class ModuleResolverTest {
     }
 
     @Test
-    fun `discovers all modules and their class dirs`() {
+    fun `discovers all modules`() {
         val root = project()
-        val resolver = ModuleResolver(root)
-        assertEquals(listOf(":app", ":feature"), resolver.allModules().sorted())
-        assertEquals(
-            listOf(root.resolve("feature/build/tmp/kotlin-classes/debug")),
-            resolver.classDirsOf(":feature"),
-        )
+        assertEquals(listOf(":app", ":feature"), ModuleResolver(root).allModules().sorted())
+    }
+
+    @Test
+    fun `classDirsOf finds AGP 8 + Kotlin-Gradle-Plugin layout`() {
+        val root = project()
+        val dir = root.resolve("feature/build/tmp/kotlin-classes/debug")
+        Files.createDirectories(dir)
+        assertEquals(listOf(dir), ModuleResolver(root).classDirsOf(":feature"))
+    }
+
+    @Test
+    fun `classDirsOf finds AGP 9 built-in-Kotlin layout`() {
+        val root = project()
+        val dir = root.resolve("feature/build/intermediates/built_in_kotlinc/debug/compileDebugKotlin/classes")
+        Files.createDirectories(dir)
+        assertEquals(listOf(dir), ModuleResolver(root).classDirsOf(":feature"))
+    }
+
+    @Test
+    fun `classDirsOf finds javac layout`() {
+        val root = project()
+        val dir = root.resolve("feature/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes")
+        Files.createDirectories(dir)
+        assertEquals(listOf(dir), ModuleResolver(root).classDirsOf(":feature"))
+    }
+
+    @Test
+    fun `classDirsOf returns every existing candidate when more than one layout is present`() {
+        val root = project()
+        val kgp = root.resolve("feature/build/tmp/kotlin-classes/debug")
+        val agp9 = root.resolve("feature/build/intermediates/built_in_kotlinc/debug/compileDebugKotlin/classes")
+        Files.createDirectories(kgp)
+        Files.createDirectories(agp9)
+        assertEquals(setOf(kgp, agp9), ModuleResolver(root).classDirsOf(":feature").toSet())
+    }
+
+    @Test
+    fun `classDirsOf errors loudly naming every path it checked when none exist`() {
+        val root = project()
+        val error = assertFailsWith<IllegalStateException> { ModuleResolver(root).classDirsOf(":feature") }
+        assertTrue(error.message!!.contains("build/tmp/kotlin-classes/debug"))
+        assertTrue(error.message!!.contains("built_in_kotlinc"))
+        assertTrue(error.message!!.contains(":feature"))
     }
 }
