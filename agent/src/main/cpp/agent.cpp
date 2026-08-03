@@ -1,0 +1,418 @@
+#include <jni.h>
+#include "jvmti.h"
+
+#include <android/log.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <pthread.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+#include <condition_variable>
+#include <fstream>
+#include <mutex>
+#include <string>
+#include <vector>
+
+#define LOG_TAG "HotReloadAgent"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+
+namespace {
+
+constexpr uint8_t kCmdPing = 0x01;
+constexpr uint8_t kCmdLoadDex = 0x02;
+constexpr uint8_t kStatusOk = 0x00;
+// Real incompatibility: RedefineClasses rejected the bytecode, or the target class isn't
+// loaded (new classes are unsupported in v1). Matches Protocol.STATUS_FAIL on the CLI side.
+constexpr uint8_t kStatusFail = 0x02;
+// Environmental/agent-side error: malformed payload, unreadable dex file — not a code-
+// compatibility problem, so the CLI shouldn't tell the user to "rebuild". Matches
+// Protocol.STATUS_ERROR.
+constexpr uint8_t kStatusError = 0x03;
+// LOAD_DEX payload record separator — matches Protocol.RECORD_SEP (0x1E, ASCII Record
+// Separator). See ParseLoadDexRecords for the framing this splits.
+constexpr char kRecordSep = '\x1E';
+
+// adbd forwards `adb forward tcp:PORT localabstract:SOCKET` by connecting to the abstract
+// socket directly from its own daemon process, not from the app — so SO_PEERCRED on a
+// legitimate CLI-forwarded connection reports adbd's uid, not the app's own uid. Verified on
+// a Pixel_3a_API_34 emulator (see fix report): adbd there runs as AID_ROOT already (root
+// emulator image), so forwarded connections arrive as uid 0. On a production device / adb
+// running unrooted, adbd runs as AID_SHELL (2000) instead. Both are legitimate: only the host
+// developer with `adb` access to this device can reach either. What must be rejected is any
+// *other on-device app* opening the socket directly (any other uid, generally >= 10000).
+constexpr uid_t kAidRoot = 0;
+constexpr uid_t kAidShell = 2000;
+
+JavaVM* g_vm = nullptr;
+jvmtiEnv* g_jvmti = nullptr;
+bool g_started = false;
+std::string g_socket_name;
+
+// Signals ServerThread's bind/listen outcome back to Agent_OnAttach so g_started only latches
+// true once the socket is actually accepting connections — not merely once pthread_create
+// returned, which says nothing about whether the thread went on to bind successfully.
+std::mutex g_start_mutex;
+std::condition_variable g_start_cv;
+enum class StartState { kPending, kOk, kFailed };
+StartState g_start_state = StartState::kPending;
+
+void SignalStart(bool ok) {
+  {
+    std::lock_guard<std::mutex> lock(g_start_mutex);
+    g_start_state = ok ? StartState::kOk : StartState::kFailed;
+  }
+  g_start_cv.notify_one();
+}
+
+// Own package name, read from /proc/self/cmdline (first NUL-terminated token — for a regular
+// app process this is the package name, the same string the CLI already knows via --package).
+// Used to make the abstract socket name per-app so two instrumented apps on one device can't
+// collide on a single global socket name.
+std::string ReadOwnPackageName() {
+  std::ifstream f("/proc/self/cmdline", std::ios::binary);
+  std::string name;
+  std::getline(f, name, '\0');
+  return name;
+}
+
+bool ReadFile(const std::string& path, std::vector<unsigned char>* out) {
+  std::ifstream f(path, std::ios::binary | std::ios::ate);
+  if (!f) return false;
+  auto size = f.tellg();
+  out->resize(static_cast<size_t>(size));
+  f.seekg(0);
+  f.read(reinterpret_cast<char*>(out->data()), size);
+  return f.good();
+}
+
+// FindClass from an attached native thread only sees the system classloader.
+// App classes must be located among already-loaded classes instead.
+jclass FindLoadedClass(JNIEnv* env, const char* descriptor) {
+  jint count = 0;
+  jclass* classes = nullptr;
+  if (g_jvmti->GetLoadedClasses(&count, &classes) != JVMTI_ERROR_NONE) return nullptr;
+  jclass found = nullptr;
+  for (jint i = 0; i < count; i++) {
+    char* sig = nullptr;
+    if (g_jvmti->GetClassSignature(classes[i], &sig, nullptr) == JVMTI_ERROR_NONE) {
+      if (found == nullptr && strcmp(sig, descriptor) == 0) {
+        found = static_cast<jclass>(env->NewGlobalRef(classes[i]));
+      }
+      g_jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
+    }
+    env->DeleteLocalRef(classes[i]);
+  }
+  g_jvmti->Deallocate(reinterpret_cast<unsigned char*>(classes));
+  return found;
+}
+
+// "Ldev/thuat/hotreload/sample/feature/GreetingKt;" -> "dev.thuat.hotreload.sample.feature.GreetingKt"
+std::string DescriptorToBinaryName(const std::string& descriptor) {
+  std::string name = descriptor;
+  if (!name.empty() && name.front() == 'L') name.erase(0, 1);
+  if (!name.empty() && name.back() == ';') name.pop_back();
+  for (char& c : name) {
+    if (c == '/') c = '.';
+  }
+  return name;
+}
+
+// Called once per LOAD_DEX message with every redefined class's binary name (one batch, one
+// call — see HandleLoadDex), so ComposeInvalidator can union group keys across the whole edit
+// for tier-1 invalidation. Returns the tier string ComposeInvalidator.reload reports back
+// ("tier1"/"tier2"/"tier3"/"tier-timeout"), or "" if the runtime lib isn't loaded / the call
+// couldn't be made — callers must treat "" as "no tier to report", not as a real tier value.
+std::string NotifyRuntime(JNIEnv* env, const std::vector<std::string>& binary_names) {
+  jclass cls = FindLoadedClass(env, "Ldev/thuat/hotreload/runtime/ComposeInvalidator;");
+  if (cls == nullptr) {
+    LOGE("ComposeInvalidator not loaded; skipping recompose signal");
+    return "";
+  }
+  std::string tier;
+  jmethodID reload = env->GetStaticMethodID(cls, "reload", "([Ljava/lang/String;)Ljava/lang/String;");
+  if (reload != nullptr) {
+    jclass stringClass = env->FindClass("java/lang/String");
+    jobjectArray names = env->NewObjectArray(static_cast<jsize>(binary_names.size()), stringClass, nullptr);
+    for (size_t i = 0; i < binary_names.size(); i++) {
+      jstring s = env->NewStringUTF(binary_names[i].c_str());
+      env->SetObjectArrayElement(names, static_cast<jsize>(i), s);
+      env->DeleteLocalRef(s);
+    }
+    auto result = static_cast<jstring>(env->CallStaticObjectMethod(cls, reload, names));
+    if (result != nullptr) {
+      const char* chars = env->GetStringUTFChars(result, nullptr);
+      if (chars != nullptr) {
+        tier.assign(chars);
+        env->ReleaseStringUTFChars(result, chars);
+      }
+      env->DeleteLocalRef(result);
+    }
+    env->DeleteLocalRef(names);
+    env->DeleteLocalRef(stringClass);
+  }
+  if (env->ExceptionCheck()) {
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+  }
+  env->DeleteGlobalRef(cls);
+  return tier;
+}
+
+struct LoadDexRecord {
+  std::string descriptor;
+  std::string dex_path;
+};
+
+// Splits "<descriptor>\n<dex path>" records joined by kRecordSep. Returns false (payload is
+// malformed) if any record is missing its '\n' separator or the payload is empty.
+bool ParseLoadDexRecords(const std::string& payload, std::vector<LoadDexRecord>* out) {
+  size_t start = 0;
+  while (start <= payload.size()) {
+    size_t sep = payload.find(kRecordSep, start);
+    size_t end = (sep == std::string::npos) ? payload.size() : sep;
+    std::string record = payload.substr(start, end - start);
+    size_t nl = record.find('\n');
+    if (nl == std::string::npos) return false;
+    out->push_back({record.substr(0, nl), record.substr(nl + 1)});
+    if (sep == std::string::npos) break;
+    start = sep + 1;
+  }
+  return !out->empty();
+}
+
+// payload: one or more "<descriptor>\n<dex path>" records (see ParseLoadDexRecords). Loads all
+// dex bytes and resolves all target classes *before* calling RedefineClasses, so a single bad
+// record fails the whole batch before anything on-device is touched; RedefineClasses(n, defs)
+// then applies every class in one JVMTI call, which is atomic — no mid-batch partial swap is
+// ever observable, even if the runtime rejects the batch. Sets *status; on success also fills
+// *out_binary_names for the caller's NotifyRuntime call.
+std::string HandleLoadDex(JNIEnv* env, const std::string& payload, uint8_t* status,
+                           std::vector<std::string>* out_binary_names) {
+  *status = kStatusError;
+  std::vector<LoadDexRecord> records;
+  if (!ParseLoadDexRecords(payload, &records)) return "malformed LOAD_DEX payload";
+
+  std::vector<std::vector<unsigned char>> dex_blobs(records.size());
+  for (size_t i = 0; i < records.size(); i++) {
+    if (!ReadFile(records[i].dex_path, &dex_blobs[i])) {
+      return "cannot read dex: " + records[i].dex_path;
+    }
+  }
+
+  *status = kStatusFail;
+  std::vector<jclass> targets;
+  targets.reserve(records.size());
+  for (auto& rec : records) {
+    jclass target = FindLoadedClass(env, rec.descriptor.c_str());
+    if (target == nullptr) {
+      for (auto t : targets) env->DeleteGlobalRef(t);
+      return "class not loaded: " + rec.descriptor + " (new classes are unsupported in v1 — rebuild)";
+    }
+    targets.push_back(target);
+  }
+
+  std::vector<jvmtiClassDefinition> defs(targets.size());
+  for (size_t i = 0; i < targets.size(); i++) {
+    defs[i].klass = targets[i];
+    defs[i].class_byte_count = static_cast<jint>(dex_blobs[i].size());
+    defs[i].class_bytes = dex_blobs[i].data();
+  }
+  jvmtiError err = g_jvmti->RedefineClasses(static_cast<jint>(defs.size()), defs.data());
+  for (auto t : targets) env->DeleteGlobalRef(t);
+
+  if (err != JVMTI_ERROR_NONE) {
+    char* name = nullptr;
+    g_jvmti->GetErrorName(err, &name);
+    std::string msg = "RedefineClasses failed: " + std::string(name ? name : "?") +
+                      " (structural changes are unsupported in v1 — rebuild)";
+    if (name) g_jvmti->Deallocate(reinterpret_cast<unsigned char*>(name));
+    return msg;
+  }
+
+  *status = kStatusOk;
+  std::string joined;
+  for (size_t i = 0; i < records.size(); i++) {
+    if (i) joined += ", ";
+    joined += records[i].descriptor;
+    out_binary_names->push_back(DescriptorToBinaryName(records[i].descriptor));
+  }
+  return joined + ": redefined";
+}
+
+bool ReadFully(int fd, void* buf, size_t len) {
+  auto* p = static_cast<uint8_t*>(buf);
+  while (len > 0) {
+    ssize_t n = read(fd, p, len);
+    if (n <= 0) return false;
+    p += n; len -= static_cast<size_t>(n);
+  }
+  return true;
+}
+
+bool WriteFully(int fd, const void* buf, size_t len) {
+  auto* p = static_cast<const uint8_t*>(buf);
+  while (len > 0) {
+    ssize_t n = write(fd, p, len);
+    if (n <= 0) return false;
+    p += n; len -= static_cast<size_t>(n);
+  }
+  return true;
+}
+
+void SendReply(int fd, uint8_t status, const std::string& detail) {
+  uint32_t len = htonl(static_cast<uint32_t>(1 + detail.size()));
+  WriteFully(fd, &len, 4);
+  WriteFully(fd, &status, 1);
+  WriteFully(fd, detail.data(), detail.size());
+}
+
+void ServeClient(int fd, JNIEnv* env) {
+  for (;;) {
+    uint32_t len_be = 0;
+    if (!ReadFully(fd, &len_be, 4)) return;
+    uint32_t len = ntohl(len_be);
+    if (len < 1 || len > 64 * 1024 * 1024) return;
+    std::vector<char> buf(len);
+    if (!ReadFully(fd, buf.data(), len)) return;
+    uint8_t cmd = static_cast<uint8_t>(buf[0]);
+    std::string payload(buf.begin() + 1, buf.end());
+
+    if (cmd == kCmdPing) {
+      SendReply(fd, kStatusOk, "pong");
+    } else if (cmd == kCmdLoadDex) {
+      uint8_t status = kStatusError;
+      std::vector<std::string> binary_names;
+      std::string detail = HandleLoadDex(env, payload, &status, &binary_names);
+      if (status == kStatusOk) {
+        std::string tier = NotifyRuntime(env, binary_names);
+        if (!tier.empty()) detail += " | " + tier;
+      }
+      SendReply(fd, status, detail);
+      LOGI("LOAD_DEX: %s", detail.c_str());
+    } else {
+      SendReply(fd, kStatusFail, "unknown command");
+    }
+  }
+}
+
+// Only the app's own uid and adb's daemon uid may use this socket — see kAidRoot/kAidShell
+// doc for why a forwarded `adb` connection doesn't arrive as the app's own uid. Any other uid
+// is some other on-device app trying to inject code via LOAD_DEX and must be rejected.
+bool PeerAuthorized(int fd, struct ucred* out_cred) {
+  socklen_t len = sizeof(*out_cred);
+  if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, out_cred, &len) != 0) {
+    LOGE("SO_PEERCRED failed: %s; rejecting connection", strerror(errno));
+    return false;
+  }
+  uid_t self = geteuid();
+  if (out_cred->uid == self || out_cred->uid == kAidRoot || out_cred->uid == kAidShell) {
+    LOGI("accepted peer uid=%u pid=%d (self uid=%u)", static_cast<unsigned>(out_cred->uid), out_cred->pid, static_cast<unsigned>(self));
+    return true;
+  }
+  LOGW("rejected connection from unauthorized uid=%u pid=%d (self uid=%u)", static_cast<unsigned>(out_cred->uid), out_cred->pid, static_cast<unsigned>(self));
+  return false;
+}
+
+void* ServerThread(void*) {
+  JNIEnv* env = nullptr;
+  JavaVMAttachArgs args = {JNI_VERSION_1_6, "HotReloadAgent", nullptr};
+  if (g_vm->AttachCurrentThread(&env, &args) != JNI_OK) {
+    LOGE("cannot attach server thread");
+    SignalStart(false);
+    return nullptr;
+  }
+
+  int server = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (server < 0) {
+    LOGE("socket() failed: %s", strerror(errno));
+    g_vm->DetachCurrentThread();
+    SignalStart(false);
+    return nullptr;
+  }
+  sockaddr_un addr = {};
+  addr.sun_family = AF_UNIX;
+  addr.sun_path[0] = '\0';  // abstract namespace
+  size_t max_name = sizeof(addr.sun_path) - 1 - 1;  // leading NUL byte + this NUL isn't required, but stay well inside the buffer
+  if (g_socket_name.size() > max_name) {
+    LOGE("socket name too long (%zu bytes): %s", g_socket_name.size(), g_socket_name.c_str());
+    close(server);
+    g_vm->DetachCurrentThread();
+    SignalStart(false);
+    return nullptr;
+  }
+  memcpy(addr.sun_path + 1, g_socket_name.data(), g_socket_name.size());
+  socklen_t addr_len = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + 1 + g_socket_name.size());
+  if (bind(server, reinterpret_cast<sockaddr*>(&addr), addr_len) != 0 || listen(server, 1) != 0) {
+    LOGE("bind/listen failed: %s", strerror(errno));
+    close(server);
+    g_vm->DetachCurrentThread();
+    SignalStart(false);
+    return nullptr;
+  }
+  LOGI("listening on @%s", g_socket_name.c_str());
+  SignalStart(true);
+
+  for (;;) {
+    int client = accept(server, nullptr, nullptr);
+    if (client < 0) break;
+    // Deliberately uninitialized: PeerAuthorized fully populates every field via getsockopt
+    // before anything reads it, and unlike this loop's earlier code, is never read on the
+    // false-return path.
+    struct ucred peer;
+    if (!PeerAuthorized(client, &peer)) {
+      close(client);
+      continue;
+    }
+    ServeClient(client, env);
+    close(client);
+  }
+  g_vm->DetachCurrentThread();
+  return nullptr;
+}
+
+}  // namespace
+
+extern "C" JNIEXPORT jint JNICALL Agent_OnAttach(JavaVM* vm, char* /*options*/, void* /*reserved*/) {
+  if (g_started) return JNI_OK;  // am attach-agent may be issued again; server already up
+  g_vm = vm;
+  if (vm->GetEnv(reinterpret_cast<void**>(&g_jvmti), JVMTI_VERSION_1_2) != JNI_OK) {
+    LOGE("no jvmti env — is the app debuggable?");
+    return JNI_ERR;
+  }
+  jvmtiCapabilities caps = {};
+  caps.can_redefine_classes = 1;
+  if (g_jvmti->AddCapabilities(&caps) != JVMTI_ERROR_NONE) {
+    LOGE("can_redefine_classes unavailable");
+    return JNI_ERR;
+  }
+
+  g_socket_name = "hotreload-agent-" + ReadOwnPackageName();
+  {
+    std::lock_guard<std::mutex> lock(g_start_mutex);
+    g_start_state = StartState::kPending;
+  }
+  pthread_t t;
+  if (pthread_create(&t, nullptr, ServerThread, nullptr) != 0) {
+    LOGE("pthread_create failed: %s", strerror(errno));
+    return JNI_ERR;
+  }
+  pthread_detach(t);  // never joined; detach so its resources are reclaimed on exit
+
+  // Wait for the thread to actually report a bind/listen outcome before latching g_started —
+  // a failed bind must NOT permanently disable the agent (old bug: g_started was set true
+  // unconditionally right after pthread_create, regardless of what the thread went on to do).
+  std::unique_lock<std::mutex> lock(g_start_mutex);
+  g_start_cv.wait(lock, [] { return g_start_state != StartState::kPending; });
+  if (g_start_state == StartState::kFailed) {
+    LOGE("server thread failed to start; agent not marked started (a later attach-agent will retry)");
+    return JNI_ERR;
+  }
+  g_started = true;
+  LOGI("agent attached");
+  return JNI_OK;
+}

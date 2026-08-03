@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.22)
+project(hotreload_agent CXX)
+add_library(hotreload_agent SHARED agent.cpp)
+target_include_directories(hotreload_agent PRIVATE include)
+target_compile_features(hotreload_agent PRIVATE cxx_std_17)
+find_library(log-lib log)
+target_link_libraries(hotreload_agent ${log-lib})

@@ -12,7 +12,7 @@ ART on stock devices provides everything needed: debuggable apps accept JVMTI ag
 
 ## V1 Scope
 
-**Reloads reliably:** method-body changes to composable functions (and any other class's method bodies, which the same primitive gives for free). UI updates on device with state preserved — `remember`, ViewModel, navigation, scroll all survive because only code is swapped, never the object graph.
+**Reloads reliably:** method-body changes to composable functions (and any other class's method bodies, which the same primitive gives for free). UI updates on device with state preserved — `remember`, ViewModel, navigation, scroll all survive on the primary reload path (group-key invalidation; see runtime component), because only code is swapped and only affected recompose scopes re-execute. Fallback paths carry progressively weaker state guarantees, and the CLI reports which path ran.
 
 **Target projects:** Android-only Compose apps, including large multi-module builds and mixed Views+Compose codebases. Only Compose UI re-renders automatically; changed non-composable classes still get body-swapped but Views don't refresh themselves.
 
@@ -55,29 +55,70 @@ Four components in one repo (Gradle multi-project):
 Applied to the app's build. Debug variant only: adds the `runtime` library dependency. Zero effect on release builds.
 
 ### cli (Kotlin JVM)
-The daemon loop: file watcher → Gradle tooling API incremental compile of the changed module → content-hash diff of class output dirs against a baseline captured after each cycle → `d8` changed classes into `patch.dex` → `adb push` → socket message to agent → print result.
+The daemon loop: file watcher → Gradle tooling API build of the app module's merge-dex tasks
+(`mergeProjectDexDebug`/`mergeLibDexDebug`; there's no per-module target — Gradle's task graph
+pulls in `compileDebugKotlin` for whichever module actually changed as an upstream dependency,
+so compile errors surface regardless of which module the edit lives in) → content-hash diff of
+class output dirs against a baseline captured after each cycle → extract each changed class
+from AGP's already-merged dex output via D8's `--file-per-class` split → `adb push` → socket
+message to agent → print result, including which reload tier fired.
+
+Extracting from the merged dex rather than dexing each changed class in isolation is a
+correctness requirement, not an optimization: a fresh, standalone `d8` invocation on just one
+`.class` file mints a *different* synthetic-lambda hash (`$r8$lambda$<hash>`, emitted for e.g.
+the bridge method backing every Compose composable's restart lambda) than AGP's own merge-dex
+output for the exact same class — the hash depends on toolchain/build context, not just the
+class bytes. `RedefineClasses` then reports the old-hash method deleted and the new-hash one
+added (`JVMTI_ERROR_UNSUPPORTED_REDEFINITION_METHOD_DELETED`), a spurious incompatible-change
+rejection for an edit ART could otherwise redefine cleanly. AGP's merge-dex tasks reproduce the
+exact same hash across edits (verified empirically: stable per call site, not per edit), so the
+CLI instead locates the changed class inside that already-merged, already-consistent dex output
+and splits just that one class back out with `--file-per-class` — a dex-to-dex repackage that
+mints no new hashes, only re-emits the original bytes. v1 assumes a conventional single
+top-level app module, default `:app` (override with `--app-module`), which both the compile
+step and the dex-extraction step target.
 
 ### agent (C++ JVMTI, arm64 + x86_64)
-Attached once via `adb shell am attach-agent`. Load path matters: SELinux blocks debuggable apps loading agents from `/data/local/tmp` on many Android versions, so the CLI pushes the .so to `/data/local/tmp` then copies it into the app's `code_cache` dir via `run-as` (same trick Android Studio uses); patch dex files travel the same route. The agent listens on an abstract-namespace local socket (reached via `adb forward`). It receives a class descriptor + dex path per changed class, calls `RedefineClasses` with the dex bytes, and reports per-class success/failure back to the CLI. After a successful redefine it signals the runtime lib directly — an in-process JNI call to `ComposeInvalidator.reload()` — no extra IPC.
+Attached once via `adb shell am attach-agent`. Load path matters: SELinux blocks debuggable apps loading agents from `/data/local/tmp` on many Android versions, so the CLI pushes the .so to `/data/local/tmp` then copies it into the app's `code_cache` dir via `run-as` (same trick Android Studio uses); patch dex files travel the same route, each cycle's device filename prefixed with a content hash so a failed push/copy can never leave a stale file that gets silently redefined instead. Bootstrap pings first and skips the whole push/copy/attach sequence if the agent already responds — re-pushing `agent.so` onto an already-attached, already-`mmap`'d agent corrupts its own live code pages (reproduced on-device as a SIGSEGV in unrelated code shortly after a second bootstrap call).
+
+The agent listens on an abstract-namespace local socket **named per package** (`hotreload-agent-<package>`, derived from `/proc/self/cmdline`) — a fixed global name would let two instrumented apps collide on one socket. On `accept()` it authenticates the peer via `SO_PEERCRED`, accepting only the app's own uid or `adb`'s daemon uid (root or shell — `adb forward`'s bridged connections arrive as adbd's own uid, not the app's, verified empirically) and rejecting everything else (some other on-device app trying to reach the socket directly), logging rejections.
+
+A `LOAD_DEX` message carries every changed class from one edit as one batch — records separated by an ASCII Record Separator (0x1E) — not one message per class. The agent reads and resolves every class first, then calls `RedefineClasses(n, defs)` **once**, which JVMTI applies atomically: a mid-batch rejection can never leave some classes already swapped and others not (the earlier one-message-per-class design could). The reply status distinguishes real incompatibility (`RedefineClasses` rejected the bytecode, or a new class — unsupported in v1) from environmental/agent-side errors (malformed payload, unreadable dex file) via a distinct status byte, so the CLI doesn't tell the user to "rebuild" for e.g. a disk hiccup. After a successful redefine it signals the runtime lib directly — an in-process JNI call to `ComposeInvalidator.reload()`, passed every redefined class's binary name in one call — no extra IPC.
 
 ### runtime (Android library, debug only)
-`ComposeInvalidator.reload()`, called by the agent via JNI, triggers whole-app recomposition through Compose runtime's internal `HotReloader` object (invoked reflectively — the same hook JetBrains desktop hot reload uses). Whole-app recompose costs milliseconds and avoids computing compiler-generated group keys entirely; per-group precision is a later optimization, not a v1 requirement. If reflection fails (Compose version shifted the internal API), fallback is `Activity.recreate()` on the tracked foreground activity.
+`ComposeInvalidator.reload(binaryNames)`, called by the agent via JNI after redefinition, re-renders the UI through a three-tier fallback chain:
+
+1. **Group-key invalidation (primary — preserves `remember` state).** The gradle-plugin enables the Compose compiler's function-key-metadata output for debug builds; at reload time the runtime maps each redefined class to its compiler-emitted key-meta annotations and calls the Compose runtime's internal `invalidateGroupsWithKey` (reflectively, probing both `HotReloader` and `Recomposer.Companion` homes). Only the affected recompose scopes re-execute; the slot table survives, so `remember` state in untouched groups is preserved. This is the same mechanism Android Studio's Live Edit uses.
+2. **Whole-composition rebuild (`HotReloader.saveStateAndDispose`/`loadStateAndCompose`).** Empirically verified on device: this path disposes the entire composition and discards ALL `remember`/`rememberSaveable` slots (`rememberSaveable` restore only replays a real Activity save/restore round trip). Activity-instance and ViewModel state survive. Used only when tier 1's reflection targets are unavailable.
+3. **`Activity.recreate()`** on the tracked foreground activity — full restart of the visible screen, state loss over wrong state.
+
+The CLI reports which tier executed so the user knows what state guarantee they got.
 
 ## Data Flow
 
 ### Cycle 0 — Bootstrap
 
-Before the first reload: gradle-plugin applied to the app, `assembleDebug` built and installed, app launched by the user. The CLI then: captures the class-output baseline (content hashes across all modules' kotlin-classes dirs), pushes the agent .so and copies it into `code_cache` via `run-as`, attaches it with `am attach-agent`, sets up `adb forward` to the agent's socket, and pings. Only then does watching begin.
+Before the first reload: gradle-plugin applied to the app, `assembleDebug` built and installed, app launched by the user. The CLI sets up `adb forward` to the agent's (per-package-named) socket and pings first; if that already succeeds (an earlier bootstrap's agent is still attached and responsive), it captures the class-output baseline and returns immediately without touching the device further. Otherwise it pushes the agent .so and copies it into `code_cache` via `run-as`, attaches it with `am attach-agent`, and pings again (retrying briefly — `attach-agent` can return before the agent has actually started listening), then captures the baseline. Only then does watching begin.
 
 ### One Reload Cycle
 
 1. Save `.kt` → watcher debounce 100 ms
-2. CLI: Gradle tooling API `:module:compileDebugKotlin` (incremental — only the changed module compiles)
-3. Diff class output dirs by content hash → changed `.class` set
-4. `d8` → `patch.dex` → `adb push` → socket message to agent
-5. Agent: `RedefineClasses`, per-class result returned to CLI
+2. CLI: Gradle tooling API build of `:app:mergeProjectDexDebug` + `:app:mergeLibDexDebug`
+   (pulls in `compileDebugKotlin` for whichever module actually changed, and AGP's own
+   dexBuilder tasks, as upstream dependencies of those two)
+3. Diff class output dirs by content hash, keyed per-module so two modules sharing a relative
+   class path never collapse into one entry → changed `.class` set (excluding
+   compiler-generated `$KeyMeta` metadata classes, which never need redefinition — see the
+   `cli` section above)
+4. Extract each changed class from AGP's merged dex output, matched by its package-qualified
+   path (D8 `--file-per-class` split — not a fresh isolated dex encode; see the `cli` section
+   above for why that would be wrong) → `adb push` every dex file (unique, content-hashed
+   device filename per cycle) → **one** socket message carrying the whole batch to the agent
+5. Agent: reads and resolves every class, then one `RedefineClasses(n, defs)` call for the
+   whole batch (atomic — see the `agent` section above), result (plus the tier that fired)
+   returned to CLI
 6. Runtime lib: invalidate groups for redefined composables → recompose; state untouched → preserved
-7. CLI prints `✓ reloaded 2 classes in 1.8s` or the failure reason
+7. CLI prints `✓ reloaded 2 classes in 1.8s [tier1 — remember state preserved]` or the failure reason
 
 ## Error Handling
 
@@ -86,7 +127,11 @@ Reliability is the core goal: the tool must never leave the app in silently-wron
 - **Incompatible change** (new/removed method, field, changed signature, new class): JVMTI returns an error → CLI reports exactly what changed and why it's unsupported, offers one-key full rebuild + reinstall.
 - **Compile error:** Gradle output surfaced as-is; app untouched; watcher keeps running.
 - **Recompose failure** (internal `HotReloader` reflection fails or invalidation throws): fall back to `Activity.recreate()` on the tracked foreground activity — state loss over wrong state.
-- **Device disconnect / dead agent:** CLI health-check ping before each push; one automatic reattach attempt, then surface to user.
+- **Device disconnect / dead agent:** CLI pings once, at `bootstrap` (attach time) — not
+  before every push. A dead agent surfaces as a `DeviceError` when a later cycle's socket
+  connection fails (after the compile step has already run), reported loudly to the user with
+  no attempt to hide or retry through it. There is no automatic reattach in v1; recovery is a
+  manual re-run of `hotreload bootstrap`. Automatic reattach is future work, not implemented.
 - **Multi-device:** v1 targets one device — first found, or `--serial`.
 
 ## Testing

@@ -1,0 +1,8 @@
+.gradle/
+build/
+.cxx/
+local.properties
+.idea/
+*.iml
+.DS_Store
+sample/.hotreload/
