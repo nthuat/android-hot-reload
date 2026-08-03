@@ -1,15 +1,16 @@
 package dev.thuat.hotreload.gradle
 
+import java.io.File
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.provider.Property
 import org.jetbrains.kotlin.compose.compiler.gradle.ComposeCompilerGradlePluginExtension
 
 /**
- * Lets consumers override the runtime dependency coordinate. Needed because JitPack re-maps the
- * publishing group to `com.github.<user>.<repo>` regardless of what the build itself publishes
- * under (`dev.thuat`), so JitPack consumers must set this explicitly — see README for the exact
- * coordinate. mavenLocal/Maven Central consumers can leave it at the default.
+ * Lets consumers override the runtime dependency coordinate. Rarely needed now that the plugin
+ * derives the coordinate from wherever it was itself resolved from (see
+ * [HotReloadPlugin.defaultRuntimeCoordinate]) — kept as an escape hatch for setups where
+ * derivation can't work, e.g. a repository layout this plugin doesn't recognise.
  */
 abstract class HotReloadExtension {
     abstract val runtimeCoordinate: Property<String>
@@ -18,7 +19,7 @@ abstract class HotReloadExtension {
 class HotReloadPlugin : Plugin<Project> {
     override fun apply(project: Project) {
         val extension = project.extensions.create("hotreload", HotReloadExtension::class.java)
-        extension.runtimeCoordinate.convention(DEFAULT_RUNTIME_COORDINATE)
+        extension.runtimeCoordinate.convention(defaultRuntimeCoordinate(project))
         project.plugins.withId("com.android.application") {
             // Deferred to afterEvaluate: a consumer's `hotreload { runtimeCoordinate.set(...) }`
             // block runs later in the same script, after this `plugins {}`-block apply().
@@ -34,6 +35,46 @@ class HotReloadPlugin : Plugin<Project> {
 
     companion object {
         const val DEFAULT_RUNTIME_COORDINATE = "dev.thuat:hotreload-runtime:0.1.0-SNAPSHOT"
+
+        // The module name this plugin's own jar is published under (see gradle-plugin's project
+        // name in settings.gradle.kts) — needed to anchor the Maven-layout parse on the plugin's
+        // own artifact segment, since the runtime artifact sits under a *different* one
+        // (RuntimeCoordinateDerivation.RUNTIME_ARTIFACT_ID) beside it in the same repo.
+        internal const val OWN_ARTIFACT_ID = "gradle-plugin"
+
+        /**
+         * The runtime coordinate to use when a consumer sets no explicit override: derived from
+         * the jar this plugin class was loaded from (same group/version the runtime artifact
+         * publishes under, whatever repository that turns out to be), falling back to the
+         * hardcoded `dev.thuat` default when derivation isn't possible — notably the
+         * composite-build/`includeBuild` case, where the plugin comes from a project rather than
+         * a jar and Gradle substitutes the included build's project regardless of what
+         * coordinate string is configured here.
+         */
+        internal fun defaultRuntimeCoordinate(project: Project): String {
+            val jarFile = ownJarFile()
+            val derived = jarFile?.let { RuntimeCoordinateDerivation.deriveFromJar(it, OWN_ARTIFACT_ID) }
+            if (derived == null) {
+                project.logger.info(
+                    "hotreload: could not derive the runtime coordinate from the plugin's own " +
+                        "classpath location (${jarFile?.absolutePath ?: "not loaded from a jar"}) " +
+                        "— falling back to the built-in default '$DEFAULT_RUNTIME_COORDINATE'. " +
+                        "This is expected for composite builds/includeBuild, where the plugin is " +
+                        "resolved from a project rather than a jar; set " +
+                        "hotreload.runtimeCoordinate explicitly if this default is wrong for " +
+                        "your setup."
+                )
+                return DEFAULT_RUNTIME_COORDINATE
+            }
+            val (group, version) = derived
+            return "$group:${RuntimeCoordinateDerivation.RUNTIME_ARTIFACT_ID}:$version"
+        }
+
+        private fun ownJarFile(): File? {
+            val location = HotReloadPlugin::class.java.protectionDomain?.codeSource?.location ?: return null
+            val file = runCatching { File(location.toURI()) }.getOrElse { File(location.path) }
+            return file.takeIf { it.isFile }
+        }
     }
 }
 
