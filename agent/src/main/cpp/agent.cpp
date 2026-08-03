@@ -53,6 +53,10 @@ JavaVM* g_vm = nullptr;
 jvmtiEnv* g_jvmti = nullptr;
 bool g_started = false;
 std::string g_socket_name;
+// Own package name (see ReadOwnPackageName) — cached separately from g_socket_name so the PING
+// reply can name it directly (see ServeClient's kCmdPing branch) without re-deriving it from the
+// socket name's "hotreload-agent-" prefix. Read once in Agent_OnAttach; never changes.
+std::string g_pkg_name;
 
 // Signals ServerThread's bind/listen outcome back to Agent_OnAttach so g_started only latches
 // true once the socket is actually accepting connections — not merely once pthread_create
@@ -335,7 +339,11 @@ void ServeClient(int fd, JNIEnv* env) {
     std::string payload(buf.begin() + 1, buf.end());
 
     if (cmd == kCmdPing) {
-      SendReply(fd, kStatusOk, "pong");
+      // "pong:<pkg>" — must match Protocol.PING_REPLY_PREFIX / Protocol.pingPackageOf on the CLI
+      // side byte-for-byte. Lets the CLI verify it actually reached *this* app's agent before
+      // sending any LOAD_DEX, instead of trusting whatever a possibly-stale `adb forward`
+      // mapping happens to point at (see ReloadOrchestrator.verifyAgentIdentity).
+      SendReply(fd, kStatusOk, "pong:" + g_pkg_name);
     } else if (cmd == kCmdLoadDex) {
       uint8_t status = kStatusError;
       std::vector<std::string> binary_names;
@@ -447,7 +455,8 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnAttach(JavaVM* vm, char* /*options*/, 
     return JNI_ERR;
   }
 
-  g_socket_name = "hotreload-agent-" + ReadOwnPackageName();
+  g_pkg_name = ReadOwnPackageName();
+  g_socket_name = "hotreload-agent-" + g_pkg_name;
   {
     std::lock_guard<std::mutex> lock(g_start_mutex);
     g_start_state = StartState::kPending;

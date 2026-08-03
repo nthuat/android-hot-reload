@@ -42,6 +42,18 @@ object Protocol {
     // `substringAfterLast(" | ")` reliably finds the tier regardless of whether a skipped
     // segment is present.
 
+    // A PING reply's `detail` is "pong:<pkg>" where <pkg> is the package name the agent read
+    // from its own /proc/self/cmdline (same string it uses to build its per-package abstract
+    // socket name — see ReloadOrchestrator.agentSocketName / agent.cpp's ReadOwnPackageName).
+    // Must match agent.cpp's ServeClient PING branch byte-for-byte. The CLI checks this against
+    // the package it expects (ReloadOrchestrator.verifyAgentIdentity) before ever sending
+    // LOAD_DEX, so a stale/wrong `adb forward` mapping onto some other app's agent is caught by
+    // protocol content, not just by re-issuing the forward.
+    const val PING_REPLY_PREFIX: String = "pong:"
+
+    fun pingPackageOf(detail: String): String? =
+        detail.takeIf { it.startsWith(PING_REPLY_PREFIX) }?.removePrefix(PING_REPLY_PREFIX)
+
     fun encodeLoadDexPayload(records: List<Pair<String, String>>): ByteArray =
         records.joinToString(RECORD_SEP.toString()) { (descriptor, devicePath) -> "$descriptor\n$devicePath" }
             .toByteArray()

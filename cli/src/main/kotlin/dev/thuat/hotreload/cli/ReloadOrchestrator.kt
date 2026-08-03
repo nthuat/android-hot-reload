@@ -12,7 +12,10 @@ class ReloadConfig(
     val adbPath: String,
     val agentSoDir: Path,   // dir containing <abi>/libhotreload_agent.so
     val appModule: String = ":app",
-    val localPort: Int = 46837,
+    // Per-package by default (see derivePort doc) — not a single fixed port — so two
+    // independently-run hotreload sessions on one machine (two consumer projects, or an e2e run
+    // against the sample app) don't collide. `--port` (Main.kt) overrides this explicitly.
+    val localPort: Int = derivePort(pkg),
 )
 
 sealed class CycleOutcome {
@@ -54,6 +57,18 @@ internal fun isKeyMetaClass(binaryName: String): Boolean =
 // CLI could end up talking to the wrong app's agent. The agent independently derives the exact
 // same name from its own process name (see agent.cpp) — no handshake needed to agree on it.
 internal fun agentSocketName(pkg: String): String = "hotreload-agent-$pkg"
+
+// Deterministic per-package local port: `bootstrap` and a later, separate `cycle` process must
+// agree on the same port with no shared state between them (no lockfile, no daemon), so this
+// can't scan for a free port or ask adb to assign one (adb forward tcp:0 ...) — either would
+// need somewhere to persist the chosen port for the next process to find. Hashing the package
+// name is the simplest thing that's deterministic across processes. Masked to the low 12 bits:
+// a 4096-port range starting at 46837 (through 50932). Collision ceiling: two packages whose
+// hashCode()s happen to agree in their low 12 bits (~1/4096 per pair) would still collide on one
+// port — same failure mode this whole fix is closing, just far rarer. `--port` (Main.kt)
+// overrides this if that ever bites in practice.
+internal fun derivePort(pkg: String, basePort: Int = 46837): Int =
+    basePort + (pkg.hashCode() and 0x0FFF)
 
 // Agent appends " | tierN" to a successful LOAD_DEX reply's detail (see agent.cpp NotifyRuntime)
 // once ComposeInvalidator.reload() reports back which tier fired for the whole batch. Always the
@@ -144,6 +159,32 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
     private fun pingAgent(): Reply? =
         runCatching { AgentClient("localhost", config.localPort).use { it.ping() } }.getOrNull()
 
+    // The agent names its own package in every PING reply (see Protocol.pingPackageOf /
+    // agent.cpp's g_pkg_name — the same string it already uses to build its per-package socket
+    // name). Checked here, before cycle() does any compile/dex/push work or LOAD_DEX, so a
+    // stale/wrong `adb forward` mapping is caught by protocol content, not just by the forward
+    // re-pointing above — a second line of defense against ever redefining classes in the wrong
+    // running app.
+    private fun verifyAgentIdentity(): CycleOutcome.DeviceError? {
+        val reply = pingAgent()
+            ?: return CycleOutcome.DeviceError(
+                "no agent responded on port ${config.localPort} for ${config.pkg} — run 'bootstrap' first"
+            )
+        val actualPkg = Protocol.pingPackageOf(reply.detail)
+        return when {
+            actualPkg == null -> CycleOutcome.DeviceError(
+                "agent ping reply did not name a package (got '${reply.detail}') — run 'bootstrap' again"
+            )
+            actualPkg != config.pkg ->
+                CycleOutcome.DeviceError(
+                    "wrong app: expected ${config.pkg}'s agent but reached ${actualPkg}'s agent on port " +
+                        "${config.localPort} (stale 'adb forward' mapping from another bootstrapped app) " +
+                        "— run 'bootstrap' again for ${config.pkg}"
+                )
+            else -> null
+        }
+    }
+
     // Bounds bootstrap()/cycle() to a cheap, fast-failing check before any compile/adb-transfer
     // work: `adb get-state` fails outright when the serial is gone, and reports "offline"/
     // "unauthorized" for a wedged device without ever touching the app.
@@ -162,6 +203,24 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         // an emulator went offline mid-session and the CLI hung indefinitely instead of failing
         // fast). Cheap enough to check before sinking a full compile into a dead device.
         deviceNotReadyError()?.let { return it }
+
+        // `adb forward tcp:PORT ...` is a single GLOBAL, per-device mapping — bootstrap() sets
+        // it, but until this fix cycle() never did, so it just trusted whatever the forward
+        // currently pointed at. bootstrapping a *second* app on the same device (a different
+        // project, or an e2e run against the sample app) silently repoints it, and every
+        // subsequent cycle for the first app would then send its LOAD_DEX to the second app's
+        // agent — reproduced live (see the fix's report): it failed safely only because the two
+        // apps' data dirs differed; with a same-named loaded class it would have redefined the
+        // WRONG RUNNING APP. `adb forward` is idempotent and cheap (one local round trip, no
+        // device-side work if already pointed here), so just re-issue it for this cycle's own
+        // package every time instead of trusting a mapping some other process may have moved.
+        adb.forward(config.localPort, agentSocketName(config.pkg)).failureOrNull("adb forward")?.let { return it }
+
+        // Belt-and-braces on top of the forward fix above: verify the far end is actually this
+        // package's agent before doing any compile/dex/push work, let alone LOAD_DEX. Catches
+        // any other port/forward confusion, not just the one just closed above.
+        verifyAgentIdentity()?.let { return it }
+
         val start = System.currentTimeMillis()
         resolver.moduleOf(changedFile)
             ?: return CycleOutcome.CompileError("cannot map $changedFile to a gradle module")

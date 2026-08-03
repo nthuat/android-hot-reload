@@ -285,4 +285,109 @@ class ReloadOrchestratorTest {
         assertEquals(1, skipped.size)
         assertNull(parseTier(detail))
     }
+
+    // The bug this closes: `adb forward` is a single GLOBAL per-device mapping. bootstrap() set
+    // it, but cycle() never did — it just trusted whatever the forward happened to point at, so
+    // bootstrapping a *second* app on the same device silently repointed it and every later
+    // cycle for the first app sent its LOAD_DEX to the second app's agent. Reproduced live (see
+    // the fix report): failed safely only because the two apps' data dirs differed. cycle() now
+    // re-issues the forward for its own package on every call, before anything else.
+    @Test
+    fun `cycle re-issues the adb forward for its own package before compiling`() {
+        val projectDir = tmp.newFolder("project-cycle-forward").toPath()
+        val agentSoDir = tmp.newFolder("agent-so-cycle-forward").toPath()
+        val config = configFor(projectDir, agentSoDir)
+
+        val runner = SequencedRunner(
+            listOf(
+                deviceReady,                // get-state
+                ProcessResult(0, "", ""),   // adb forward
+                // Nothing is listening on config.localPort, so the identity ping right after
+                // fails and cycle() returns before ever compiling — this test only cares that
+                // the forward call itself happened, with the right argv.
+            )
+        )
+        val orchestrator = ReloadOrchestrator(config, runner)
+
+        val outcome = orchestrator.cycle(projectDir.resolve("app/src/main/kotlin/Foo.kt"))
+
+        assertTrue(outcome is CycleOutcome.DeviceError)
+        assertEquals(
+            listOf("adb", "forward", "tcp:${config.localPort}", "localabstract:hotreload-agent-${config.pkg}"),
+            runner.calls.getOrNull(1),
+            "expected the second adb call (right after get-state) to be the forward for this cycle's own package",
+        )
+    }
+
+    // Belt-and-braces layer on top of the forward re-issue above: even with the forward pointed
+    // at the right socket name, verify the far end actually names this package in its PING reply
+    // before doing any compile/dex/push work, let alone LOAD_DEX. Catches any other port/forward
+    // confusion, not just the one the forward re-issue closes.
+    @Test
+    fun `cycle reports DeviceError when the agent's ping reply names a different package, and never reaches LOAD_DEX`() {
+        val projectDir = tmp.newFolder("project-wrong-agent").toPath()
+        val agentSoDir = tmp.newFolder("agent-so-wrong-agent").toPath()
+
+        val fakeAgent = java.net.ServerSocket(0)
+        val serverThread = kotlin.concurrent.thread {
+            runCatching {
+                fakeAgent.accept().use { s ->
+                    val input = java.io.DataInputStream(s.getInputStream())
+                    val len = input.readInt()
+                    val body = ByteArray(len); input.readFully(body)
+                    assertEquals(Protocol.CMD_PING, body[0])
+                    val detail = "pong:dev.thuat.hotreload.sample.OTHER".toByteArray()
+                    s.getOutputStream().write(
+                        java.nio.ByteBuffer.allocate(4 + 1 + detail.size)
+                            .putInt(1 + detail.size).put(Protocol.STATUS_OK).put(detail).array()
+                    )
+                    s.getOutputStream().flush()
+                }
+            }
+        }
+
+        val config = ReloadConfig(
+            projectDir = projectDir,
+            pkg = "dev.thuat.hotreload.sample",
+            serial = null,
+            adbPath = "adb",
+            agentSoDir = agentSoDir,
+            localPort = fakeAgent.localPort,
+        )
+        val runner = SequencedRunner(
+            listOf(
+                deviceReady,               // get-state
+                ProcessResult(0, "", ""),  // adb forward
+            )
+        )
+        val orchestrator = ReloadOrchestrator(config, runner)
+
+        val outcome = orchestrator.cycle(projectDir.resolve("app/src/main/kotlin/Foo.kt"))
+        serverThread.join(2_000)
+        fakeAgent.close()
+
+        assertTrue(outcome is CycleOutcome.DeviceError)
+        val reason = (outcome as CycleOutcome.DeviceError).reason
+        assertTrue(reason.contains(config.pkg), "expected the expected package in the reason, got: $reason")
+        assertTrue(reason.contains("dev.thuat.hotreload.sample.OTHER"), "expected the actual package in the reason, got: $reason")
+        assertFalse(Files.exists(projectDir.resolve(".hotreload/baseline.txt")), "baseline must not be saved on identity mismatch")
+        assertEquals(
+            2, runner.calls.size,
+            "expected cycle to stop right after the identity check — no compile/dex/push, no LOAD_DEX attempted: ${runner.calls}",
+        )
+    }
+
+    // Port derivation: bootstrap() and a later, separate `cycle` process must agree on the same
+    // local port with no shared state between them — see derivePort's doc in
+    // ReloadOrchestrator.kt for why a hash of the package name is used instead of scanning for a
+    // free port or letting adb assign one.
+    @Test
+    fun `derivePort is deterministic for the same package`() {
+        assertEquals(derivePort("com.example.orderbook"), derivePort("com.example.orderbook"))
+    }
+
+    @Test
+    fun `derivePort differs for two different packages`() {
+        assertTrue(derivePort("com.example.orderbook") != derivePort("dev.thuat.hotreload.sample"))
+    }
 }

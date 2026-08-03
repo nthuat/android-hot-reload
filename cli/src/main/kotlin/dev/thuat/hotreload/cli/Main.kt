@@ -28,6 +28,7 @@ fun main(args: Array<String>) {
             cwd = Paths.get("").toAbsolutePath(),
         ),
         appModule = opts["app-module"] ?: ":app",
+        localPort = opts["port"]?.let { it.toIntOrNull() ?: fail("--port must be an integer, got '$it'") } ?: derivePort(pkg),
     )
     val orchestrator = ReloadOrchestrator(config)
 
@@ -175,7 +176,11 @@ private fun defaultAdb(): String {
 }
 
 private fun usage(): Nothing {
-    println("usage: hotreload <bootstrap|cycle|run> --project <dir> --package <pkg> [--serial S] [--file f.kt] [--adb path] [--agent-so-dir dir] [--app-module :app]")
+    println(
+        "usage: hotreload <bootstrap|cycle|run> --project <dir> --package <pkg> [--serial S] " +
+            "[--file f.kt] [--adb path] [--agent-so-dir dir] [--app-module :app] " +
+            "[--port N (default: derived per-package, see ReloadOrchestrator.derivePort)]"
+    )
     exitProcess(64)
 }
 

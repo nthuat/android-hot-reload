@@ -66,4 +66,18 @@ class ProtocolTest {
         val payload = Protocol.encodeLoadDexPayload(listOf("La/Foo;" to "/data/a.dex"))
         assertEquals("La/Foo;\n/data/a.dex", String(payload, Charsets.UTF_8))
     }
+
+    // PING reply detail is "pong:<pkg>" (see Protocol.pingPackageOf's doc) — must match
+    // agent.cpp's ServeClient kCmdPing branch byte-for-byte.
+    @Test
+    fun `pingPackageOf extracts the package name from a pong colon reply`() {
+        assertEquals("dev.thuat.hotreload.sample", Protocol.pingPackageOf("pong:dev.thuat.hotreload.sample"))
+    }
+
+    @Test
+    fun `pingPackageOf returns null for a reply that does not start with the pong colon prefix`() {
+        assertEquals(null, Protocol.pingPackageOf("pong"))
+        assertEquals(null, Protocol.pingPackageOf(""))
+        assertEquals(null, Protocol.pingPackageOf("garbage"))
+    }
 }
