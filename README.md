@@ -219,9 +219,10 @@ edited file survives.
   9.3.1/Kotlin 2.4.10/Gradle 9.5 (Google's `compose-samples/JetNews`).
 - A conventional single top-level application module, default `:app` — override with
   `--app-module` if your app module has a different Gradle path.
-- Building this repo locally requires JDK 21 (`export JAVA_HOME=$(/usr/libexec/java_home -v 21)`
-  before any `./gradlew` call) — Gradle 8.11.1 does not support newer JDKs. CI supplies its own
-  JDK 17, which works fine; this is a local-machine-only constraint.
+- Building this repo requires a JDK 21 installed somewhere — `gradle/gradle-daemon-jvm.properties`
+  makes Gradle select it automatically, so `JAVA_HOME` can point anywhere. (Gradle 8.11.1 refuses
+  to run on JDK 22+, and its error is a bare version number like `26.0.2`, so this is worth
+  keeping.)
 
 ## License
 
