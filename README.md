@@ -12,32 +12,62 @@ on an API 34 x86_64 emulator; see `e2e/run-e2e.sh`.
 
 ## Quickstart
 
-1. Until artifacts are published to a Maven repo, consume this repo as a Gradle composite
-   build from a checkout — clone `android-hot-reload` somewhere, then in your app project's
-   `settings.gradle.kts`:
+1. Clone `android-hot-reload` somewhere, then publish it to your local Maven repo:
+   ```bash
+   cd /path/to/android-hot-reload
+   export JAVA_HOME=$(/usr/libexec/java_home -v 21)  # see Requirements
+   ./gradlew publishToMavenLocal
+   ```
+   This publishes both consumer-facing modules: the `dev.thuat.hotreload` Gradle plugin
+   (`gradle-plugin`) and the runtime library (`dev.thuat:hotreload-runtime`). Re-run it after
+   pulling changes to the tool.
+2. In your app project's `settings.gradle.kts`, add `mavenLocal()` to both repository blocks:
    ```kotlin
    pluginManagement {
-       repositories { google(); mavenCentral(); gradlePluginPortal() }
-       includeBuild("/path/to/android-hot-reload")
+       repositories { mavenLocal(); google(); mavenCentral(); gradlePluginPortal() }
    }
-   includeBuild("/path/to/android-hot-reload")
+   dependencyResolutionManagement {
+       repositories { mavenLocal(); google(); mavenCentral() }
+   }
    ```
-   (mirrors `sample/settings.gradle.kts` in this repo, which consumes the tool the same way.)
-2. Apply the plugin to your app module (injects the runtime lib into debug builds):
+3. Apply the plugin to your app module (injects the runtime lib into debug builds; a version is
+   required since the plugin isn't resolved from an included build):
    ```kotlin
    // app/build.gradle.kts
    plugins {
-       id("dev.thuat.hotreload")
+       id("dev.thuat.hotreload") version "0.1.0-SNAPSHOT"
    }
    ```
-3. Build, install, and launch your debug build as usual.
-4. Point the CLI at your project and package, and let it watch for changes:
+4. Build, install, and launch your debug build as usual.
+5. Point the CLI at your project and package, and let it watch for changes:
    ```bash
    cli/build/install/cli/bin/cli run --project /path/to/your/project --package your.app.package
    ```
    Edit a composable, save — the running app updates in place. `hotreload bootstrap` (single
    attach) and `hotreload cycle --file path/to/File.kt` (single reload) are also available for
    scripting.
+
+### Alternative: composite build (hacking on the tool itself)
+
+If you're actively editing `android-hot-reload` source and want changes picked up without a
+`publishToMavenLocal` round-trip each time, consume it as a Gradle composite build instead:
+```kotlin
+pluginManagement {
+    repositories { google(); mavenCentral(); gradlePluginPortal() }
+    includeBuild("/path/to/android-hot-reload")
+}
+includeBuild("/path/to/android-hot-reload")
+```
+(mirrors `sample/settings.gradle.kts` in this repo, which intentionally consumes the tool this
+way so the sample always builds against source.) Apply the plugin the same way but *without* a
+version: `id("dev.thuat.hotreload")`.
+
+**Measured cost of this route**: Gradle re-configures the entire 4-module tool build every
+reload cycle — `./gradlew help -q` in the tool repo alone costs ~1.7–3.8s. On a real consumer
+project this accounted for roughly half the `compile` phase of each reload; switching to
+mavenLocal dropped median total cycle time from ~6.8s to ~4.0s (median compile 3.5s → 2.1s,
+5-run samples, contended dev machine). Use the composite route only when you need source
+changes to the tool itself reflected immediately; otherwise mavenLocal is faster.
 
 ## Supported / unsupported changes
 

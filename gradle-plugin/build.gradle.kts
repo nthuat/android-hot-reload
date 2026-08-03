@@ -1,4 +1,4 @@
-plugins { alias(libs.plugins.kotlin.jvm); `java-gradle-plugin` }
+plugins { alias(libs.plugins.kotlin.jvm); `java-gradle-plugin`; `maven-publish` }
 group = "dev.thuat"
 version = "0.1.0-SNAPSHOT"
 gradlePlugin {

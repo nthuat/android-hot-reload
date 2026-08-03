@@ -11,6 +11,7 @@ jobs:
         with: { distribution: temurin, java-version: 17 }
       - uses: gradle/actions/setup-gradle@v4
       - run: ./gradlew build -x lint
+      - run: ./gradlew publishToMavenLocal
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 45
