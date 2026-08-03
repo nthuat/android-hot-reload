@@ -60,6 +60,22 @@ JVMTI agent's `.so`) needs a separate download, since it's not a Maven artifact.
    ```
    (`hotreload.runtimeCoordinate.set(...)` is still available as an override, for repository
    layouts the plugin can't auto-detect.)
+
+   **Multi-module projects**: apply the plugin to *every* module that contains composables, not
+   just the app module — the plugin is what enables the Compose compiler's function-key metadata,
+   and without it edits to a library module's composables fall back to tier 2 (whole-composition
+   rebuild, losing `remember` state) instead of tier-1 group-key invalidation. Declare the version
+   once in the root build and apply it without a version in each module, otherwise Gradle fails
+   with `gradle-plugin:null`:
+   ```kotlin
+   // root build.gradle.kts
+   plugins { id("dev.thuat.hotreload") version "v0.1.1" apply false }
+
+   // app/build.gradle.kts, feature/build.gradle.kts, … (each module with composables)
+   plugins { id("dev.thuat.hotreload") }
+   ```
+   Only the application module gets the runtime dependency injected; library modules just get the
+   compiler flag.
 3. Build, install, and launch your debug build as usual.
 4. Download the CLI from the [release matching your tag](../../releases), unzip it, and point it
    at your project and package:
