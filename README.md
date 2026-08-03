@@ -7,7 +7,7 @@ design rationale and the class-redefinition constraints it works within are in t
 
 ## Status
 
-v1 (`v0.1.0`): composable **body** reloads only — see the compatibility table below for exactly
+v1 (`v0.1.1`): composable **body** reloads only — see the compatibility table below for exactly
 what is and isn't supported.
 
 Verified end to end on both an API 34 x86_64 emulator and a physical arm64 device (Samsung
@@ -49,19 +49,17 @@ JVMTI agent's `.so`) needs a separate download, since it's not a Maven artifact.
    }
    ```
 2. Apply the plugin to your app module, pinned to a released tag (see [Releases](../../releases)
-   for the latest), and point `hotreload.runtimeCoordinate` at the matching JitPack coordinate —
-   JitPack serves artifacts under `com.github.<user>.<repo>`, not the `dev.thuat` group this
-   build publishes under internally, so the plugin's own default (`dev.thuat:hotreload-runtime:...`)
-   won't resolve here:
+   for the latest). No further configuration is needed — the plugin derives the runtime
+   library's coordinate from wherever it resolved *itself* from (same group, same version,
+   artifact `hotreload-runtime`), so it finds the right JitPack coordinate automatically:
    ```kotlin
    // app/build.gradle.kts
    plugins {
-       id("dev.thuat.hotreload") version "v0.1.0"
-   }
-   hotreload {
-       runtimeCoordinate.set("com.github.nthuat.android-hot-reload:hotreload-runtime:v0.1.0")
+       id("dev.thuat.hotreload") version "v0.1.1"
    }
    ```
+   (`hotreload.runtimeCoordinate.set(...)` is still available as an override, for repository
+   layouts the plugin can't auto-detect.)
 3. Build, install, and launch your debug build as usual.
 4. Download the CLI from the [release matching your tag](../../releases), unzip it, and point it
    at your project and package:
