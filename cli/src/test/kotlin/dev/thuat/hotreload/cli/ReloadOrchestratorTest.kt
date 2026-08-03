@@ -4,7 +4,10 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.nio.file.Files
+import java.nio.file.Paths
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 // See isKeyMetaClass's doc comment in ReloadOrchestrator.kt for the ordering-race this filter
@@ -124,5 +127,86 @@ class ReloadOrchestratorTest {
         assertTrue(outcome is CycleOutcome.DeviceError)
         assertTrue((outcome as CycleOutcome.DeviceError).reason.contains("run-as: package not debuggable"))
         assertFalse(Files.exists(projectDir.resolve(".hotreload/baseline.txt")))
+    }
+
+    // Covers the skip-unloaded-classes fix: editing a Compose file that has a @Preview used to
+    // fail the whole reload, because the ComposableSingletons$...Kt$lambda-N$1 holder classes
+    // Compose emits for preview-only lambdas are never loaded at runtime and so came back
+    // "class not loaded" from the agent. These parse the exact "<result>[ | skipped <N>: ...]
+    // [ | tierN]" detail format agent.cpp (HandleLoadDex/ServeClient) emits — see Protocol.kt's
+    // detail-format doc, which this must match byte-for-byte.
+
+    @Test
+    fun `plain reply with no skipped segment still parses tier correctly`() {
+        val detail = "Lcom/example/FooKt;: redefined | tier1"
+        assertEquals("tier1", parseTier(detail))
+        assertTrue(parseSkippedDescriptors(detail).isEmpty())
+    }
+
+    @Test
+    fun `reply detail with skipped classes parses both the tier and the skipped descriptors`() {
+        val detail = "Lcom/example/FooKt;: redefined | skipped 2: " +
+            "Lcom/example/ComposableSingletons\$FooKt\$lambda-1\$1;, Lcom/example/ComposableSingletons\$FooKt\$lambda-2\$1; | tier1"
+
+        assertEquals("tier1", parseTier(detail))
+        assertEquals(
+            listOf(
+                "Lcom/example/ComposableSingletons\$FooKt\$lambda-1\$1;",
+                "Lcom/example/ComposableSingletons\$FooKt\$lambda-2\$1;",
+            ),
+            parseSkippedDescriptors(detail),
+        )
+    }
+
+    @Test
+    fun `all-skipped reply has no tier since the runtime is never notified, but still lists every skipped class`() {
+        val detail = "nothing redefined: all 2 class(es) not loaded | skipped 2: " +
+            "Lcom/example/ComposableSingletons\$FooKt\$lambda-1\$1;, Lcom/example/ComposableSingletons\$FooKt\$lambda-2\$1;"
+
+        assertNull(parseTier(detail))
+        assertEquals(2, parseSkippedDescriptors(detail).size)
+    }
+
+    // Mirrors cycle()'s STATUS_OK branch: toRedefine is partitioned by descriptor membership in
+    // the parsed skipped set to build CycleOutcome.Reloaded.classes/.skipped — the actual
+    // parsing this test exercises is what makes a partially-skipped batch report both a
+    // populated `skipped` list (exit 0, normal reload line) and, in the all-skipped case, an
+    // empty `classes` list (exit 0, "nothing applied" line — see Main.kt's report()).
+    @Test
+    fun `partitioning toRedefine by parsed skipped descriptors yields the Reloaded outcome shape`() {
+        val toRedefine = listOf(
+            ChangedClass(Paths.get("Foo.class"), "com.example.FooKt", "Lcom/example/FooKt;"),
+            ChangedClass(
+                Paths.get("Lambda1.class"),
+                "com.example.ComposableSingletons\$FooKt\$lambda-1\$1",
+                "Lcom/example/ComposableSingletons\$FooKt\$lambda-1\$1;",
+            ),
+        )
+        val detail = "Lcom/example/FooKt;: redefined | skipped 1: Lcom/example/ComposableSingletons\$FooKt\$lambda-1\$1; | tier1"
+
+        val skippedDescriptors = parseSkippedDescriptors(detail).toSet()
+        val (skipped, redefined) = toRedefine.partition { it.descriptor in skippedDescriptors }
+
+        assertEquals(listOf("com.example.FooKt"), redefined.map { it.binaryName })
+        assertEquals(listOf("com.example.ComposableSingletons\$FooKt\$lambda-1\$1"), skipped.map { it.binaryName })
+    }
+
+    @Test
+    fun `fully-skipped batch partitions to empty redefined and full skipped, matching the nothing-applied outcome`() {
+        val toRedefine = listOf(
+            ChangedClass(
+                Paths.get("Lambda1.class"),
+                "com.example.ComposableSingletons\$FooKt\$lambda-1\$1",
+                "Lcom/example/ComposableSingletons\$FooKt\$lambda-1\$1;",
+            ),
+        )
+        val detail = "nothing redefined: all 1 class(es) not loaded | skipped 1: Lcom/example/ComposableSingletons\$FooKt\$lambda-1\$1;"
+
+        val skippedDescriptors = parseSkippedDescriptors(detail).toSet()
+        val (skipped, redefined) = toRedefine.partition { it.descriptor in skippedDescriptors }
+
+        assertTrue(redefined.isEmpty())
+        assertEquals(1, skipped.size)
+        assertNull(parseTier(detail))
     }
 }

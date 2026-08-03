@@ -15,7 +15,18 @@ class ReloadConfig(
 )
 
 sealed class CycleOutcome {
-    data class Reloaded(val classes: List<String>, val millis: Long, val tier: String? = null) : CycleOutcome()
+    // `skipped`: binary names of classes that were part of this cycle's changed set but weren't
+    // currently loaded on-device, so the agent left them untouched instead of failing the whole
+    // batch (see agent.cpp HandleLoadDex's doc for why this is safe — e.g. a
+    // ComposableSingletons$...Kt$lambda-N$1 holder for a @Preview-only lambda). `classes` is
+    // empty and `skipped` non-empty exactly when every changed class in the batch was skipped —
+    // Main.kt reports that case as "nothing applied" rather than a normal reload.
+    data class Reloaded(
+        val classes: List<String>,
+        val millis: Long,
+        val tier: String? = null,
+        val skipped: List<String> = emptyList(),
+    ) : CycleOutcome()
     data class CompileError(val output: String) : CycleOutcome()
     data class Incompatible(val reason: String) : CycleOutcome()
     data class DeviceError(val reason: String) : CycleOutcome()
@@ -36,6 +47,22 @@ internal fun isKeyMetaClass(binaryName: String): Boolean =
 // CLI could end up talking to the wrong app's agent. The agent independently derives the exact
 // same name from its own process name (see agent.cpp) — no handshake needed to agree on it.
 internal fun agentSocketName(pkg: String): String = "hotreload-agent-$pkg"
+
+// Agent appends " | tierN" to a successful LOAD_DEX reply's detail (see agent.cpp NotifyRuntime)
+// once ComposeInvalidator.reload() reports back which tier fired for the whole batch. Always the
+// last " | "-delimited segment (see Protocol.kt's detail-format doc), so this keeps working
+// whether or not a "skipped" segment precedes it. Top-level and pure for direct unit testing.
+internal fun parseTier(detail: String): String? =
+    detail.substringAfterLast(" | ", "").takeIf { it.startsWith("tier") }
+
+// Parses the optional "skipped <N>: <d1>, <d2>, ..." segment out of a LOAD_DEX reply detail (see
+// Protocol.kt's detail-format doc) into the list of skipped class descriptors. Returns an empty
+// list when no class was skipped. Top-level and pure for direct unit testing.
+internal fun parseSkippedDescriptors(detail: String): List<String> {
+    val segment = detail.split(" | ").firstOrNull { it.startsWith("skipped ") } ?: return emptyList()
+    val descriptors = segment.substringAfter(": ", "")
+    return if (descriptors.isEmpty()) emptyList() else descriptors.split(", ")
+}
 
 // `am attach-agent` hands the request off to ART rather than blocking until Agent_OnAttach has
 // actually run, so the first ping after a fresh attach can arrive before the agent is listening.
@@ -174,18 +201,19 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         return when (reply.status) {
             Protocol.STATUS_OK -> {
                 store.save(current)
-                CycleOutcome.Reloaded(toRedefine.map { it.binaryName }, System.currentTimeMillis() - start, parseTier(reply.detail))
+                val skippedDescriptors = parseSkippedDescriptors(reply.detail).toSet()
+                val (skipped, redefined) = toRedefine.partition { it.descriptor in skippedDescriptors }
+                CycleOutcome.Reloaded(
+                    classes = redefined.map { it.binaryName },
+                    millis = System.currentTimeMillis() - start,
+                    tier = parseTier(reply.detail),
+                    skipped = skipped.map { it.binaryName },
+                )
             }
             Protocol.STATUS_ERROR -> CycleOutcome.DeviceError(reply.detail)
             else -> CycleOutcome.Incompatible(reply.detail)
         }
     }
-
-    // Agent appends " | tierN" to a successful LOAD_DEX reply's detail (see agent.cpp
-    // NotifyRuntime) once ComposeInvalidator.reload() reports back which tier fired for the
-    // whole batch.
-    private fun parseTier(detail: String): String? =
-        detail.substringAfterLast(" | ", "").takeIf { it.startsWith("tier") }
 
     private fun contentHashPrefix(file: Path): String =
         MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(file))

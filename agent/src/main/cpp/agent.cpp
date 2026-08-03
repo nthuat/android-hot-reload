@@ -26,8 +26,9 @@ namespace {
 constexpr uint8_t kCmdPing = 0x01;
 constexpr uint8_t kCmdLoadDex = 0x02;
 constexpr uint8_t kStatusOk = 0x00;
-// Real incompatibility: RedefineClasses rejected the bytecode, or the target class isn't
-// loaded (new classes are unsupported in v1). Matches Protocol.STATUS_FAIL on the CLI side.
+// Real incompatibility: RedefineClasses rejected the bytecode (structural change — unsupported
+// in v1). A target class that merely isn't currently loaded is NOT this status: it's skipped
+// instead (see HandleLoadDex). Matches Protocol.STATUS_FAIL on the CLI side.
 constexpr uint8_t kStatusFail = 0x02;
 // Environmental/agent-side error: malformed payload, unreadable dex file — not a code-
 // compatibility problem, so the CLI shouldn't tell the user to "rebuild". Matches
@@ -185,14 +186,53 @@ bool ParseLoadDexRecords(const std::string& payload, std::vector<LoadDexRecord>*
   return !out->empty();
 }
 
+// Comma-joins descriptors for the "skipped" detail segment (see HandleLoadDex doc). Class
+// descriptors never contain ", ", so this is unambiguous to split back apart on the CLI side.
+std::string JoinDescriptors(const std::vector<std::string>& descriptors) {
+  std::string joined;
+  for (size_t i = 0; i < descriptors.size(); i++) {
+    if (i) joined += ", ";
+    joined += descriptors[i];
+  }
+  return joined;
+}
+
 // payload: one or more "<descriptor>\n<dex path>" records (see ParseLoadDexRecords). Loads all
-// dex bytes and resolves all target classes *before* calling RedefineClasses, so a single bad
-// record fails the whole batch before anything on-device is touched; RedefineClasses(n, defs)
-// then applies every class in one JVMTI call, which is atomic — no mid-batch partial swap is
-// ever observable, even if the runtime rejects the batch. Sets *status; on success also fills
-// *out_binary_names for the caller's NotifyRuntime call.
+// dex bytes up front, then resolves each record's target class independently: a class that
+// isn't currently loaded is SKIPPED rather than failing the whole batch. This is safe because
+// ReloadOrchestrator.cycle() already rejects any genuinely new/removed class via its
+// diff.added/diff.removed structural check *before* anything is pushed here — every descriptor
+// that reaches this function was present in the baseline snapshot, i.e. it exists in the
+// installed APK. "Not loaded" for such a class means "exists on disk but not currently
+// loaded/executing" (the common case: a `ComposableSingletons$<File>Kt$lambda-N$1` holder the
+// Compose compiler emits for a `@Preview` function's lambda, which previews-only code never
+// loads at runtime) — never "brand new class the app doesn't have". Skipping it cannot desync
+// running code, because no running code is using it; if it's loaded later it gets the APK's
+// original bytes until the next full rebuild (see the "skipped" reply segment, a warning, not
+// an error).
+//
+// RedefineClasses(n, defs) is then called once for whatever *did* resolve, which JVMTI applies
+// atomically — no mid-batch partial swap is ever observable, even if the runtime rejects that
+// smaller batch. A real RedefineClasses rejection is still a hard failure (kStatusFail): that's
+// ART saying the bytecode itself is incompatible (structural change), unrelated to whether a
+// class was loaded.
+//
+// Sets *status. On any kStatusOk return, *out_skipped holds the skipped descriptors (may be
+// empty) and *out_binary_names holds the binary names of classes actually redefined (empty iff
+// every record was skipped — the caller uses this to skip the NotifyRuntime call too, since
+// nothing changed).
+//
+// Reply detail format (see Protocol.kt for the CLI-side parser this must match byte-for-byte):
+//   "<result>[ | skipped <N>: <d1>, <d2>, ...][ | tierN]"
+// <result> is "<redefined descriptors, comma-joined>: redefined" when >=1 class was redefined,
+// or "nothing redefined: all <N> class(es) not loaded" when zero were. The optional
+// " | skipped <N>: ..." segment is appended (by this function) whenever out_skipped is
+// non-empty. The optional trailing " | tierN" segment is appended by the caller (ServeClient)
+// after NotifyRuntime returns, so it always ends up last — parseTier's
+// `substringAfterLast(" | ")` keeps working unchanged.
 std::string HandleLoadDex(JNIEnv* env, const std::string& payload, uint8_t* status,
-                           std::vector<std::string>* out_binary_names) {
+                           std::vector<std::string>* out_binary_names,
+                           std::vector<std::string>* out_skipped) {
   *status = kStatusError;
   std::vector<LoadDexRecord> records;
   if (!ParseLoadDexRecords(payload, &records)) return "malformed LOAD_DEX payload";
@@ -204,28 +244,36 @@ std::string HandleLoadDex(JNIEnv* env, const std::string& payload, uint8_t* stat
     }
   }
 
-  *status = kStatusFail;
   std::vector<jclass> targets;
+  std::vector<size_t> resolved_idx;  // parallel to targets: index back into records/dex_blobs
   targets.reserve(records.size());
-  for (auto& rec : records) {
-    jclass target = FindLoadedClass(env, rec.descriptor.c_str());
+  for (size_t i = 0; i < records.size(); i++) {
+    jclass target = FindLoadedClass(env, records[i].descriptor.c_str());
     if (target == nullptr) {
-      for (auto t : targets) env->DeleteGlobalRef(t);
-      return "class not loaded: " + rec.descriptor + " (new classes are unsupported in v1 — rebuild)";
+      out_skipped->push_back(records[i].descriptor);
+      continue;
     }
     targets.push_back(target);
+    resolved_idx.push_back(i);
+  }
+
+  if (targets.empty()) {
+    *status = kStatusOk;
+    return "nothing redefined: all " + std::to_string(records.size()) + " class(es) not loaded" +
+           " | skipped " + std::to_string(out_skipped->size()) + ": " + JoinDescriptors(*out_skipped);
   }
 
   std::vector<jvmtiClassDefinition> defs(targets.size());
   for (size_t i = 0; i < targets.size(); i++) {
     defs[i].klass = targets[i];
-    defs[i].class_byte_count = static_cast<jint>(dex_blobs[i].size());
-    defs[i].class_bytes = dex_blobs[i].data();
+    defs[i].class_byte_count = static_cast<jint>(dex_blobs[resolved_idx[i]].size());
+    defs[i].class_bytes = dex_blobs[resolved_idx[i]].data();
   }
   jvmtiError err = g_jvmti->RedefineClasses(static_cast<jint>(defs.size()), defs.data());
-  for (auto t : targets) env->DeleteGlobalRef(t);
+  for (auto t : targets) env->DeleteGlobalRef(t);  // exactly once, on both the success and failure paths below
 
   if (err != JVMTI_ERROR_NONE) {
+    *status = kStatusFail;
     char* name = nullptr;
     g_jvmti->GetErrorName(err, &name);
     std::string msg = "RedefineClasses failed: " + std::string(name ? name : "?") +
@@ -236,12 +284,16 @@ std::string HandleLoadDex(JNIEnv* env, const std::string& payload, uint8_t* stat
 
   *status = kStatusOk;
   std::string joined;
-  for (size_t i = 0; i < records.size(); i++) {
-    if (i) joined += ", ";
-    joined += records[i].descriptor;
-    out_binary_names->push_back(DescriptorToBinaryName(records[i].descriptor));
+  for (size_t idx : resolved_idx) {
+    if (!joined.empty()) joined += ", ";
+    joined += records[idx].descriptor;
+    out_binary_names->push_back(DescriptorToBinaryName(records[idx].descriptor));
   }
-  return joined + ": redefined";
+  std::string detail = joined + ": redefined";
+  if (!out_skipped->empty()) {
+    detail += " | skipped " + std::to_string(out_skipped->size()) + ": " + JoinDescriptors(*out_skipped);
+  }
+  return detail;
 }
 
 bool ReadFully(int fd, void* buf, size_t len) {
@@ -287,8 +339,12 @@ void ServeClient(int fd, JNIEnv* env) {
     } else if (cmd == kCmdLoadDex) {
       uint8_t status = kStatusError;
       std::vector<std::string> binary_names;
-      std::string detail = HandleLoadDex(env, payload, &status, &binary_names);
-      if (status == kStatusOk) {
+      std::vector<std::string> skipped;
+      std::string detail = HandleLoadDex(env, payload, &status, &binary_names, &skipped);
+      // Only notify the runtime when something actually changed — binary_names is empty iff
+      // every record in the batch was skipped as not-loaded (see HandleLoadDex), and there's no
+      // point asking Compose to recompose when nothing was redefined.
+      if (status == kStatusOk && !binary_names.empty()) {
         std::string tier = NotifyRuntime(env, binary_names);
         if (!tier.empty()) detail += " | " + tier;
       }

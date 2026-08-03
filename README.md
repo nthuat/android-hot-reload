@@ -45,6 +45,7 @@ on an API 34 x86_64 emulator; see `e2e/run-e2e.sh`.
 | --- | --- |
 | Edit a composable function's body (text, logic, layout) | Yes |
 | Edit a non-composable function's body | Yes |
+| Edit a file that contains one or more `@Preview` functions | Yes — the `ComposableSingletons$<File>Kt$lambda-N$1` holder classes the Compose compiler emits for preview-only lambdas are skipped rather than failing the reload (see "Not-yet-loaded classes" below). |
 | Add/remove a top-level function or method (changes class shape) | No — rejected by ART's `RedefineClasses`, exit code 2 |
 | Add/remove/reorder fields | No — same restriction |
 | Add/remove a class | No |
@@ -54,6 +55,23 @@ on an API 34 x86_64 emulator; see `e2e/run-e2e.sh`.
 
 Anything in the "No" column returns exit code 2 with a message telling you to rebuild; the CLI
 never leaves the app in a corrupted state.
+
+### Not-yet-loaded classes (e.g. `@Preview` lambda holders)
+
+A changed class that was already in the baseline snapshot (so it's known to exist in the
+installed APK — never a brand-new class; that case is still rejected above) but isn't currently
+loaded in the running process is **skipped**, not treated as a failure. The most common case:
+the Compose compiler emits a `ComposableSingletons$<File>Kt$lambda-N$1` holder class per
+composable lambda in a file, including ones used only by `@Preview` functions — those never run
+outside Android Studio/Paparazzi, so the app process never loads them, and any edit that shifts
+lambda numbering in the file used to fail the *entire* reload with a bogus "rebuild" demand.
+
+Skipping is safe: nothing running is using that class, so nothing can desync. If it's ever
+loaded later (e.g. you start using that lambda for real), it loads the APK's original bytes —
+stale until the next full rebuild. Exit code stays 0; the CLI prints a short extra line naming
+how many classes were skipped. If *every* changed class in a cycle was skipped, the CLI prints a
+distinct "nothing applied" line instead of a reload line (still exit 0 — nothing broke, nothing
+changed either).
 
 ### Reload tiers
 

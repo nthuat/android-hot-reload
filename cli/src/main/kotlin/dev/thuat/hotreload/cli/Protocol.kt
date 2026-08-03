@@ -11,7 +11,7 @@ object Protocol {
     const val CMD_PING: Byte = 0x01
     const val CMD_LOAD_DEX: Byte = 0x02
     const val STATUS_OK: Byte = 0x00
-    const val STATUS_FAIL: Byte = 0x02   // real incompatibility: RedefineClasses rejected the bytecode, or a new class (unsupported in v1)
+    const val STATUS_FAIL: Byte = 0x02   // real incompatibility: RedefineClasses rejected the bytecode (structural change, unsupported in v1). A not-yet-loaded class is NOT this — it's skipped instead (see the LOAD_DEX detail format below).
 
     // Environmental/agent-side error — malformed payload, unreadable dex file — distinct from
     // STATUS_FAIL so the orchestrator doesn't tell the user to "rebuild" for e.g. a disk hiccup.
@@ -25,6 +25,22 @@ object Protocol {
     // atomically — either every class swaps or none do, never a mid-batch mix of old/new code
     // (see agent.cpp HandleLoadDex and docs/superpowers/specs' agent section).
     const val RECORD_SEP: Char = '\u001E'
+
+    // A successful (STATUS_OK) LOAD_DEX reply's `detail` follows this format, built by the
+    // agent (agent.cpp HandleLoadDex/ServeClient) — must match byte-for-byte:
+    //   "<result>[ | skipped <N>: <d1>, <d2>, ...][ | tierN]"
+    // - <result> is "<redefined descriptors, comma-joined>: redefined" when at least one class
+    //   was redefined, or "nothing redefined: all <N> class(es) not loaded" when none were.
+    // - The optional " | skipped <N>: ..." segment lists descriptors of classes that were part
+    //   of the batch but not currently loaded in the running app, so they were left untouched
+    //   instead of failing the whole batch (see agent.cpp HandleLoadDex doc for why this is
+    //   safe — every descriptor here was already in the baseline snapshot, never a brand-new
+    //   class). Only present when at least one class was skipped.
+    // - The optional trailing " | tierN" segment is appended only when at least one class was
+    //   actually redefined (see ReloadOrchestrator.parseTier / agent.cpp NotifyRuntime).
+    // Segments always appear in this order and are joined with " | ", so
+    // `substringAfterLast(" | ")` reliably finds the tier regardless of whether a skipped
+    // segment is present.
 
     fun encodeLoadDexPayload(records: List<Pair<String, String>>): ByteArray =
         records.joinToString(RECORD_SEP.toString()) { (descriptor, devicePath) -> "$descriptor\n$devicePath" }

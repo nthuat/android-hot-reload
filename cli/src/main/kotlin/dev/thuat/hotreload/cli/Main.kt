@@ -87,15 +87,44 @@ private val tierGuarantee = mapOf(
     "tier-timeout" to "reload confirmation timed out",
 )
 
-private fun report(outcome: CycleOutcome) = when (outcome) {
-    is CycleOutcome.Reloaded -> {
-        val tierSuffix = outcome.tier?.let { " [$it — ${tierGuarantee[it] ?: "unknown"}]" } ?: ""
-        println("✓ reloaded ${outcome.classes.size} class(es) in ${outcome.millis}ms$tierSuffix: ${outcome.classes.joinToString()}")
+// Caps the skipped-classes line at a handful of names so it stays one short line even when a
+// file has many @Preview-only lambda holders — see summarizeSkipped's caller.
+private const val MAX_SKIPPED_NAMES_SHOWN = 3
+
+private fun summarizeSkipped(skipped: List<String>): String {
+    val shown = skipped.take(MAX_SKIPPED_NAMES_SHOWN).joinToString()
+    val extra = skipped.size - MAX_SKIPPED_NAMES_SHOWN
+    return if (extra > 0) "$shown, +$extra more" else shown
+}
+
+private fun report(outcome: CycleOutcome) {
+    when (outcome) {
+        is CycleOutcome.Reloaded -> {
+            if (outcome.classes.isEmpty() && outcome.skipped.isNotEmpty()) {
+                // Every changed class in this cycle was skipped as not-currently-loaded (e.g. a
+                // file that only touches @Preview-only lambda holders) — nothing was redefined,
+                // so this is a distinct outcome from a normal reload, not a 0-class "success".
+                println(
+                    "· nothing applied — ${outcome.skipped.size} changed class(es) not currently loaded: " +
+                        "${summarizeSkipped(outcome.skipped)} (still running the installed APK's version " +
+                        "until the next full rebuild)"
+                )
+            } else {
+                val tierSuffix = outcome.tier?.let { " [$it — ${tierGuarantee[it] ?: "unknown"}]" } ?: ""
+                println("✓ reloaded ${outcome.classes.size} class(es) in ${outcome.millis}ms$tierSuffix: ${outcome.classes.joinToString()}")
+                if (outcome.skipped.isNotEmpty()) {
+                    println(
+                        "  ⚠ skipped ${outcome.skipped.size} not-yet-loaded class(es), using the installed APK's " +
+                            "version until the next full rebuild: ${summarizeSkipped(outcome.skipped)}"
+                    )
+                }
+            }
+        }
+        is CycleOutcome.NoChanges -> println("· no bytecode changes")
+        is CycleOutcome.CompileError -> println("✗ compile error:\n${outcome.output}")
+        is CycleOutcome.Incompatible -> println("✗ incompatible change: ${outcome.reason}\n  → run a full rebuild + reinstall, then 'hotreload bootstrap' again")
+        is CycleOutcome.DeviceError -> println("✗ device/agent: ${outcome.reason}")
     }
-    is CycleOutcome.NoChanges -> println("· no bytecode changes")
-    is CycleOutcome.CompileError -> println("✗ compile error:\n${outcome.output}")
-    is CycleOutcome.Incompatible -> println("✗ incompatible change: ${outcome.reason}\n  → run a full rebuild + reinstall, then 'hotreload bootstrap' again")
-    is CycleOutcome.DeviceError -> println("✗ device/agent: ${outcome.reason}")
 }
 
 private fun exitWith(outcome: CycleOutcome): Nothing {
