@@ -27,8 +27,6 @@ class HotReloadPlugin : Plugin<Project> {
         val extension = project.extensions.create("hotreload", HotReloadExtension::class.java)
         extension.runtimeCoordinate.convention(defaultRuntimeCoordinate(project))
 
-        registerInstallCliTask(project)
-
         // Coordinator mode: applied at the root, configure every subproject reactively so
         // ordering/configuration-time issues don't bite (a subproject's own `com.android.*`
         // plugin may apply before or after this one runs). This is what makes "apply once at the
@@ -90,43 +88,6 @@ class HotReloadPlugin : Plugin<Project> {
 // enabled), so applying the plugin at both the root (coordinator mode) and directly on a module
 // doesn't do the work twice — see [configureIfAndroid].
 private const val CONFIGURED_MARKER = "dev.thuat.hotreload.configured"
-
-internal const val INSTALL_CLI_TASK_NAME = "hotReloadInstallCli"
-
-/**
- * Registers [InstallCliTask] on the *root* project of whatever build [project] belongs to —
- * always the root, regardless of whether the hotreload plugin itself was applied at the root
- * (coordinator mode) or per-module (today's style, and how `sample/` consumes it): a consumer
- * should be able to run `./gradlew hotReloadInstallCli` the same way no matter which style their
- * build uses. Guarded so it only registers once even though [HotReloadPlugin.apply] can run
- * against several projects that all share the same root (coordinator + per-module both applying,
- * or several modules each applying it directly).
- */
-private fun registerInstallCliTask(project: Project) {
-    val root = project.rootProject
-    if (root.tasks.names.contains(INSTALL_CLI_TASK_NAME)) return
-
-    val version = CliInstallSupport.versionFromCoordinate(HotReloadPlugin.defaultRuntimeCoordinate(project))
-    root.tasks.register(INSTALL_CLI_TASK_NAME, InstallCliTask::class.java) { task ->
-        task.version.set(version)
-        task.outputDir.set(root.layout.buildDirectory.dir("hotreload/cli"))
-        task.projectDir.set(root.layout.projectDirectory)
-        // Best-effort only — read at task-execution time (after every project is configured), via
-        // reflection so gradle-plugin doesn't need a compileOnly dependency on AGP just for this
-        // one optional nicety. Any failure (no "android" extension, method shape differs, no
-        // application module at all) falls back to a placeholder in the printed command.
-        task.applicationId.set(project.provider { findApplicationId(root) ?: "" })
-    }
-}
-
-/** See [registerInstallCliTask]'s comment on why this is reflection instead of a typed AGP API. */
-private fun findApplicationId(root: Project): String? = runCatching {
-    root.allprojects.firstNotNullOfOrNull { p ->
-        val android = p.extensions.findByName("android") ?: return@firstNotNullOfOrNull null
-        val defaultConfig = android.javaClass.getMethod("getDefaultConfig").invoke(android)
-        defaultConfig?.javaClass?.getMethod("getApplicationId")?.invoke(defaultConfig) as? String
-    }
-}.getOrNull()
 
 /**
  * Reacts to whichever of `com.android.application` / `com.android.library` applies to [target],
