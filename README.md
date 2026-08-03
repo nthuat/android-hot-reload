@@ -230,6 +230,14 @@ GPL-licensed is linked in).
 
 ## Contributing
 
+Start with the [design spec](docs/superpowers/specs/2026-08-01-android-hot-reload-design.md)
+and the [implementation plan](docs/superpowers/plans/2026-08-01-android-hot-reload-v1.md) for
+the module breakdown, task sequence, and deliberately deferred v1 scope.
+
+Issues and PRs welcome. `./gradlew build` runs the unit suites; `e2e/run-e2e.sh` runs the
+on-device end-to-end test against a connected device or emulator (`ANDROID_SERIAL` to pick one).
+Releasing is documented in [`docs/releasing.md`](docs/releasing.md).
+
 <details>
 <summary><b>Building from source / consuming a local build</b></summary>
 
@@ -279,8 +287,3 @@ mavenLocal dropped median total cycle time from ~6.8s to ~4.0s (median compile 3
 5-run samples, contended dev machine). Use the composite route only when you need source changes
 to the tool itself reflected immediately; otherwise mavenLocal is faster.
 </details>
-
-
-Start with the [design spec](docs/superpowers/specs/2026-08-01-android-hot-reload-design.md)
-and the [implementation plan](docs/superpowers/plans/2026-08-01-android-hot-reload-v1.md) for
-the module breakdown, task sequence, and deliberately deferred v1 scope.
