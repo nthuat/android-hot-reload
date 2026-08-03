@@ -170,16 +170,42 @@ of needing to be re-measured after the fact.
 
 ## How it works
 
-1. The Gradle plugin injects a small runtime lib (a `ContentProvider` + reflection hook into
-   Compose's `HotReloader`) into your debug build.
-2. The CLI watches your source, recompiles the changed file via the Gradle Tooling API, and
-   diffs the resulting `.class` output against a baseline to find changed classes.
-3. Changed classes are extracted from AGP's already-merged dex output (D8, `--file-per-class`)
-   and pushed to the device.
-4. A JVMTI agent (attached to the running app's JVM/ART via `adb shell am attach-agent`) calls
-   `RedefineClasses` with the new dex bytes.
-5. On success, the agent notifies the runtime lib over JNI, which asks Compose to recompose;
-   incompatible changes are rejected by ART before anything touches the running app.
+```mermaid
+---
+config:
+  look: handDrawn
+  theme: neutral
+---
+flowchart TB
+    subgraph host["💻 Your machine"]
+        direction LR
+        E["Editor<br/><i>save</i>"] --> W["CLI watcher"] --> G["Gradle<br/><i>compile + dex</i>"] --> D["Diff<br/><i>vs. baseline</i>"]
+    end
+
+    subgraph device["📱 Device"]
+        direction LR
+        A["JVMTI agent"] --> R{"ART<br/>RedefineClasses"}
+        R -->|ok| RT["Runtime lib<br/><i>invalidate group keys</i>"] --> UI["✅ UI updated<br/><b>state preserved</b>"]
+        R -->|shape<br/>changed| REJ["❌ exit 2<br/><i>app untouched</i>"]
+    end
+
+    D -->|adb push| A
+
+    style UI fill:#d4edda,stroke:#28a745
+    style REJ fill:#f8d7da,stroke:#dc3545
+    style host fill:#f6f8fa,stroke:#d0d7de
+    style device fill:#fff8f0,stroke:#d0d7de
+```
+
+The Gradle plugin's only job is setup: it injects the runtime library into your debug build and
+turns on the Compose compiler's function-key metadata. Everything above happens per save, in the
+CLI and on the device.
+
+Two details do the heavy lifting. Changed classes are extracted from AGP's **already-merged** dex
+rather than dexed in isolation — a standalone `d8` run mints different synthetic-lambda names
+than the installed APK has, which ART rejects as a deleted method. And the recompose step targets
+**group keys** rather than rebuilding the composition, which is why `remember` state outside the
+edited file survives.
 
 ## Requirements
 
