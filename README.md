@@ -10,50 +10,91 @@ design rationale and the class-redefinition constraints it works within are in t
 v1: composable **body** reloads only (see the compatibility table below). Verified end-to-end
 on an API 34 x86_64 emulator; see `e2e/run-e2e.sh`.
 
-## Quickstart
+## Quickstart (consuming the published tool)
 
-1. Clone `android-hot-reload` somewhere, then publish it to your local Maven repo and build the
-   CLI:
-   ```bash
-   cd /path/to/android-hot-reload
-   export JAVA_HOME=$(/usr/libexec/java_home -v 21)  # see Requirements
-   ./gradlew publishToMavenLocal :cli:installDist
-   ```
-   `publishToMavenLocal` publishes both consumer-facing modules: the `dev.thuat.hotreload`
-   Gradle plugin (`gradle-plugin`) and the runtime library (`dev.thuat:hotreload-runtime`).
-   `:cli:installDist` builds the CLI with the JVMTI agent's `.so` files bundled inside its own
-   install tree, so it finds them automatically — no `--agent-so-dir` needed. Re-run both after
-   pulling changes to the tool.
-2. In your app project's `settings.gradle.kts`, add `mavenLocal()` to both repository blocks:
+The Gradle plugin and the runtime library are published via [JitPack](https://jitpack.io/#nthuat/android-hot-reload)
+— no need to clone or build this repo just to *use* the tool. Only the CLI (which bundles the
+JVMTI agent's `.so`) needs a separate download, since it's not a Maven artifact.
+
+1. In your app project's `settings.gradle.kts`, add JitPack to both repository blocks, plus the
+   `resolutionStrategy` block that redirects the `dev.thuat.hotreload` plugin ID to its JitPack
+   module — plugin markers don't survive JitPack's group remapping, so plain `id(...) version
+   "..."` resolution won't find it without this:
    ```kotlin
    pluginManagement {
-       repositories { mavenLocal(); google(); mavenCentral(); gradlePluginPortal() }
+       repositories {
+           google(); mavenCentral(); gradlePluginPortal()
+           maven("https://jitpack.io")
+       }
+       resolutionStrategy {
+           eachPlugin {
+               if (requested.id.id == "dev.thuat.hotreload") {
+                   useModule("com.github.nthuat.android-hot-reload:gradle-plugin:${requested.version}")
+               }
+           }
+       }
    }
    dependencyResolutionManagement {
-       repositories { mavenLocal(); google(); mavenCentral() }
+       repositories {
+           google(); mavenCentral()
+           maven("https://jitpack.io")
+       }
    }
    ```
-3. Apply the plugin to your app module (injects the runtime lib into debug builds; a version is
-   required since the plugin isn't resolved from an included build):
+2. Apply the plugin to your app module, pinned to a released tag (see [Releases](../../releases)
+   for the latest), and point `hotreload.runtimeCoordinate` at the matching JitPack coordinate —
+   JitPack serves artifacts under `com.github.<user>.<repo>`, not the `dev.thuat` group this
+   build publishes under internally, so the plugin's own default (`dev.thuat:hotreload-runtime:...`)
+   won't resolve here:
    ```kotlin
    // app/build.gradle.kts
    plugins {
-       id("dev.thuat.hotreload") version "0.1.0-SNAPSHOT"
+       id("dev.thuat.hotreload") version "v0.1.0"
+   }
+   hotreload {
+       runtimeCoordinate.set("com.github.nthuat.android-hot-reload:hotreload-runtime:v0.1.0")
    }
    ```
-4. Build, install, and launch your debug build as usual.
-5. Point the CLI at your project and package, and let it watch for changes:
+3. Build, install, and launch your debug build as usual.
+4. Download the CLI from the [release matching your tag](../../releases), unzip it, and point it
+   at your project and package:
    ```bash
-   cli/build/install/cli/bin/cli run --project /path/to/your/project --package your.app.package
+   ./bin/cli run --project /path/to/your/project --package your.app.package
    ```
    Edit a composable, save — the running app updates in place. `hotreload bootstrap` (single
    attach) and `hotreload cycle --file path/to/File.kt` (single reload) are also available for
-   scripting.
+   scripting. Requires JDK 17+ on your `PATH`/`JAVA_HOME` to run.
 
-### Alternative: composite build (hacking on the tool itself)
+### Alternative: building from source (hacking on the tool itself)
 
-If you're actively editing `android-hot-reload` source and want changes picked up without a
-`publishToMavenLocal` round-trip each time, consume it as a Gradle composite build instead:
+If you're editing `android-hot-reload` itself, skip JitPack and build locally instead.
+
+**mavenLocal** — publish once, consume like any other Maven dependency:
+```bash
+cd /path/to/android-hot-reload
+export JAVA_HOME=$(/usr/libexec/java_home -v 21)  # see Requirements
+./gradlew publishToMavenLocal :cli:installDist
+```
+`publishToMavenLocal` publishes both consumer-facing modules: the `dev.thuat.hotreload` Gradle
+plugin (`gradle-plugin`) and the runtime library (`dev.thuat:hotreload-runtime`).
+`:cli:installDist` builds the CLI with the JVMTI agent's `.so` files bundled inside its own
+install tree, so it finds them automatically — no `--agent-so-dir` needed. Re-run both after
+pulling changes to the tool. In your app project's `settings.gradle.kts`, add `mavenLocal()` to
+both repository blocks (ahead of the others, so it's checked first):
+```kotlin
+pluginManagement {
+    repositories { mavenLocal(); google(); mavenCentral(); gradlePluginPortal() }
+}
+dependencyResolutionManagement {
+    repositories { mavenLocal(); google(); mavenCentral() }
+}
+```
+Apply the plugin the same way as the JitPack quickstart (`id("dev.thuat.hotreload") version
+"0.1.0-SNAPSHOT"`), but skip the `hotreload { runtimeCoordinate.set(...) }` override — the
+plugin's built-in default already points at the `dev.thuat` coordinate mavenLocal just published.
+
+**Composite build** — if you want changes picked up without a `publishToMavenLocal` round-trip
+each time:
 ```kotlin
 pluginManagement {
     repositories { google(); mavenCentral(); gradlePluginPortal() }
@@ -65,12 +106,12 @@ includeBuild("/path/to/android-hot-reload")
 way so the sample always builds against source.) Apply the plugin the same way but *without* a
 version: `id("dev.thuat.hotreload")`.
 
-**Measured cost of this route**: Gradle re-configures the entire 4-module tool build every
-reload cycle — `./gradlew help -q` in the tool repo alone costs ~1.7–3.8s. On a real consumer
-project this accounted for roughly half the `compile` phase of each reload; switching to
+**Measured cost of the composite route**: Gradle re-configures the entire 4-module tool build
+every reload cycle — `./gradlew help -q` in the tool repo alone costs ~1.7–3.8s. On a real
+consumer project this accounted for roughly half the `compile` phase of each reload; switching to
 mavenLocal dropped median total cycle time from ~6.8s to ~4.0s (median compile 3.5s → 2.1s,
-5-run samples, contended dev machine). Use the composite route only when you need source
-changes to the tool itself reflected immediately; otherwise mavenLocal is faster.
+5-run samples, contended dev machine). Use the composite route only when you need source changes
+to the tool itself reflected immediately; otherwise mavenLocal is faster.
 
 ## Supported / unsupported changes
 
@@ -159,12 +200,13 @@ of needing to be re-measured after the fact.
 
 ## License
 
+Apache-2.0 — see [`LICENSE`](LICENSE).
+
 `agent/src/main/cpp/include/jvmti.h` is vendored, unmodified, from the AOSP ART runtime
 (originally OpenJDK's `jvmti.h`) and is licensed under the GNU General Public License v2.0
 with the Classpath exception — see `agent/LICENSE-jvmti-header.md` for provenance and why
 that doesn't extend to `libhotreload_agent.so` itself (interface declarations only, nothing
-GPL-licensed is linked in). No overall project license file exists yet; add one before
-distributing.
+GPL-licensed is linked in).
 
 ## Contributing
 
