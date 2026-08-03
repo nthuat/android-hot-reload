@@ -8,7 +8,12 @@ version = "0.1.2"
 android {
     namespace = "dev.thuat.hotreload.runtime"
     compileSdk = 35
-    defaultConfig { minSdk = 26 }
+    // 21, not 26: this library only touches APIs from the platform's earliest days
+    // (Activity/Application/ContentProvider/Handler/Looper/Log). Hot reload itself needs API 26+
+    // because that's the JVMTI attach floor, but the *library* is inert until the agent attaches,
+    // so declaring 26 here only served to break the manifest merger for any consumer whose app
+    // has a lower minSdk — Google's own JetNews sample (minSdk 23) can't even build with it.
+    defaultConfig { minSdk = 21 }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
