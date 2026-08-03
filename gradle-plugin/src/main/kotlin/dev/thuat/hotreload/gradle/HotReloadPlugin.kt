@@ -2,17 +2,38 @@ package dev.thuat.hotreload.gradle
 
 import org.gradle.api.Plugin
 import org.gradle.api.Project
+import org.gradle.api.provider.Property
 import org.jetbrains.kotlin.compose.compiler.gradle.ComposeCompilerGradlePluginExtension
+
+/**
+ * Lets consumers override the runtime dependency coordinate. Needed because JitPack re-maps the
+ * publishing group to `com.github.<user>.<repo>` regardless of what the build itself publishes
+ * under (`dev.thuat`), so JitPack consumers must set this explicitly — see README for the exact
+ * coordinate. mavenLocal/Maven Central consumers can leave it at the default.
+ */
+abstract class HotReloadExtension {
+    abstract val runtimeCoordinate: Property<String>
+}
 
 class HotReloadPlugin : Plugin<Project> {
     override fun apply(project: Project) {
+        val extension = project.extensions.create("hotreload", HotReloadExtension::class.java)
+        extension.runtimeCoordinate.convention(DEFAULT_RUNTIME_COORDINATE)
         project.plugins.withId("com.android.application") {
-            project.dependencies.add("debugImplementation", "dev.thuat:hotreload-runtime:0.1.0-SNAPSHOT")
+            // Deferred to afterEvaluate: a consumer's `hotreload { runtimeCoordinate.set(...) }`
+            // block runs later in the same script, after this `plugins {}`-block apply().
+            project.afterEvaluate {
+                project.dependencies.add("debugImplementation", extension.runtimeCoordinate.get())
+            }
             enableKeyMeta(project)
         }
         // Key-meta generation must run on every composable-bearing module (app AND libraries) —
         // the JVMTI agent redefines classes in whichever module the edited source lives in.
         project.plugins.withId("com.android.library") { enableKeyMeta(project) }
+    }
+
+    companion object {
+        const val DEFAULT_RUNTIME_COORDINATE = "dev.thuat:hotreload-runtime:0.1.0-SNAPSHOT"
     }
 }
 
