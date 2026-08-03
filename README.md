@@ -17,119 +17,57 @@ redefine 0.1s`), with `remember` state preserved outside the edited file. The au
 end-to-end test — golden path plus the incompatible-change rejection path — is `e2e/run-e2e.sh`
 and runs on every push (see `.github/workflows/ci.yml`).
 
-## Quickstart (consuming the published tool)
+## Quickstart
 
-Only the CLI (which bundles the JVMTI agent's `.so`) needs a separate download, since it's not a
-Maven artifact — see step 4 below in either path.
+Two things: one line in your Gradle build, and the CLI binary.
 
-### Maven Central (once `v0.1.2` is published)
-
-> **Not live yet.** `dev.thuat:gradle-plugin` and `dev.thuat:hotreload-runtime` are not on Maven
-> Central as of this writing — the metadata, signing, and `publishToMavenLocal` plumbing for it
-> are in place (see [`docs/releasing.md`](docs/releasing.md)), but the maintainer hasn't run the
-> actual publish yet. Use the [JitPack path](#jitpack-works-today) below until this note is
-> removed. Once `0.1.2` is live, this will be the primary way to consume the tool — plain
-> `mavenCentral()` resolution, no JitPack `resolutionStrategy` workaround needed, since plugin
-> markers publish natively to Central.
-
-1. `google(); mavenCentral(); gradlePluginPortal()` in `pluginManagement.repositories` and
-   `google(); mavenCentral()` in `dependencyResolutionManagement.repositories` — the defaults
-   `settings.gradle.kts` already has for a fresh Android project, nothing extra to add.
-2. Apply the plugin at the root project, pinned to `0.1.2` (same coordinator-mode behavior,
-   per-module override, etc. described in the JitPack path below — only the version string and
-   the absent JitPack repo differ):
+1. Apply the plugin **once, at the root project**. Nothing else is needed for a multi-module
+   build — `mavenCentral()` is already in a fresh Android project's `settings.gradle.kts`:
    ```kotlin
    // root build.gradle.kts
    plugins {
        id("dev.thuat.hotreload") version "0.1.2"
    }
    ```
-3. Build, install, and launch your debug build as usual.
-4. Download the CLI from the [release matching your tag](../../releases), unzip it, and run
-   `./bin/cli run --project /path/to/your/project --package your.app.package` as described below.
-
-### JitPack (works today)
-
-The Gradle plugin and the runtime library are published via [JitPack](https://jitpack.io/#nthuat/android-hot-reload)
-— no need to clone or build this repo just to *use* the tool. Only the CLI (which bundles the
-JVMTI agent's `.so`) needs a separate download, since it's not a Maven artifact.
-
-1. In your app project's `settings.gradle.kts`, add JitPack to both repository blocks, plus the
-   `resolutionStrategy` block that redirects the `dev.thuat.hotreload` plugin ID to its JitPack
-   module — plugin markers don't survive JitPack's group remapping, so plain `id(...) version
-   "..."` resolution won't find it without this:
-   ```kotlin
-   pluginManagement {
-       repositories {
-           google(); mavenCentral(); gradlePluginPortal()
-           maven("https://jitpack.io")
-       }
-       resolutionStrategy {
-           eachPlugin {
-               if (requested.id.id == "dev.thuat.hotreload") {
-                   useModule("com.github.nthuat.android-hot-reload:gradle-plugin:${requested.version}")
-               }
-           }
-       }
-   }
-   dependencyResolutionManagement {
-       repositories {
-           google(); mavenCentral()
-           maven("https://jitpack.io")
-       }
-   }
-   ```
-2. Apply the plugin **once, at the root project**, pinned to a released tag (see
-   [Releases](../../releases) for the latest) — that's the only change a multi-module project
-   needs:
-   ```kotlin
-   // root build.gradle.kts
-   plugins {
-       id("dev.thuat.hotreload") version "v0.1.1"
-   }
-   ```
    Applying it at the root puts the plugin in "coordinator" mode: it reacts to every subproject's
    own `com.android.application` / `com.android.library` plugin (in whichever order Gradle
-   configures them) and wires each one up automatically — the application module gets the runtime
-   dependency injected into `debugImplementation`, and *every* Android module (app and libraries
-   alike) gets the Compose compiler's function-key metadata enabled. That last part is what makes
-   tier-1 group-key reloads work for library-module composables too, not just the app module's —
-   previously a module you forgot to apply the plugin to would silently fall back to tier 2
-   (whole-composition rebuild, losing `remember` state).
+   configures them) and wires each one up — the application module gets the runtime dependency
+   injected into `debugImplementation`, and *every* Android module, app and libraries alike, gets
+   the Compose compiler's function-key metadata enabled. That last part is what makes tier-1
+   group-key reloads work for library-module composables too; a module without it silently falls
+   back to tier 2 (whole-composition rebuild, losing `remember` state).
 
-   No further configuration is needed — the plugin derives the runtime library's coordinate from
-   wherever it resolved *itself* from (same group, same version, artifact `hotreload-runtime`), so
-   it finds the right JitPack coordinate automatically. (`hotreload.runtimeCoordinate.set(...)` is
-   still available as a root-level override, for repository layouts the plugin can't auto-detect —
-   set it once at the root and it reaches every module's injected dependency.)
+   The plugin derives the runtime library's coordinate from wherever it resolved *itself* from
+   (same group, same version, artifact `hotreload-runtime`), so there is nothing to configure.
+   `hotreload.runtimeCoordinate.set(...)` remains as a root-level override for repository layouts
+   it can't auto-detect.
 
-   **Applying it per module still works**, if you'd rather be explicit about which modules opt in.
-   Declare the version once in the root build (`apply false`) and apply it without a version in
-   each module that has composables, otherwise Gradle fails with `gradle-plugin:null`:
+   **Applying it per module still works** if you'd rather be explicit about which modules opt in —
+   declare the version once in the root build with `apply false`, then apply it without a version
+   in each module that has composables (otherwise Gradle fails with `gradle-plugin:null`):
    ```kotlin
    // root build.gradle.kts
-   plugins { id("dev.thuat.hotreload") version "v0.1.1" apply false }
+   plugins { id("dev.thuat.hotreload") version "0.1.2" apply false }
 
    // app/build.gradle.kts, feature/build.gradle.kts, … (each module with composables)
    plugins { id("dev.thuat.hotreload") }
    ```
-   Forgetting a module in this style is a silent correctness trap again (see above) — applying
-   once at the root avoids it entirely. Mixing both styles (root *and* some modules) is safe too;
-   the plugin is idempotent, so it won't double-add the dependency or double-configure a module
-   applied both ways.
-3. Build, install, and launch your debug build as usual.
-4. Download the CLI from the [release matching your tag](../../releases), unzip it, and point it
-   at your project and package:
+   Forgetting a module in this style is the silent trap described above, so root application is
+   safer. Mixing both is fine — the plugin is idempotent and won't double-configure a module.
+2. Build, install, and launch your debug build as usual.
+3. Download the CLI from the [latest release](../../releases), unzip it, and point it at your
+   project and package:
    ```bash
    ./bin/cli run --project /path/to/your/project --package your.app.package
    ```
-   Edit a composable, save — the running app updates in place. `hotreload bootstrap` (single
-   attach) and `hotreload cycle --file path/to/File.kt` (single reload) are also available for
-   scripting. Requires JDK 17+ on your `PATH`/`JAVA_HOME` to run.
+   Edit a composable, save — the running app updates in place. `bootstrap` (single attach) and
+   `cycle --file path/to/File.kt` (single reload) are also available for scripting. Requires JDK
+   17+ on `PATH`/`JAVA_HOME`; the CLI bundles the JVMTI agent's `.so` for both ABIs, so there is
+   no `--agent-so-dir` to set.
 
 ### Alternative: building from source (hacking on the tool itself)
 
-If you're editing `android-hot-reload` itself, skip JitPack and build locally instead.
+If you're editing `android-hot-reload` itself, consume it locally instead of from Maven Central.
 
 **mavenLocal** — publish once, consume like any other Maven dependency:
 ```bash
@@ -151,7 +89,7 @@ dependencyResolutionManagement {
     repositories { mavenLocal(); google(); mavenCentral() }
 }
 ```
-Apply the plugin the same way as the JitPack quickstart (`id("dev.thuat.hotreload") version
+Apply the plugin the same way as the quickstart (`id("dev.thuat.hotreload") version
 "0.1.2"`), but skip the `hotreload { runtimeCoordinate.set(...) }` override — the plugin's
 built-in default already points at the `dev.thuat` coordinate mavenLocal just published.
 

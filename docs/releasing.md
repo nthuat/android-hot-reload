@@ -108,9 +108,13 @@ below assume that's still true; skip step 1 once it's done for good.
    indexed and shows up in [search.maven.org](https://search.maven.org) search results. Direct
    coordinate resolution (`dev.thuat:hotreload-runtime:X.Y.Z`) is usually faster than search
    indexing.
-5. Once confirmed resolvable, update `README.md`'s "Maven Central" quickstart section to drop the
-   "not live yet" note and promote it to the primary path (the JitPack path can stay as a
-   secondary option indefinitely — it costs nothing to leave working).
+5. Once confirmed resolvable, bump the version references in `README.md`'s quickstart, cut a
+   matching git tag, and attach a fresh `cli.zip` (`./gradlew :cli:distZip`) to the GitHub release
+   so the tag, the release asset, and the Central version all agree — a consumer following the
+   README should never be told to apply plugin `X.Y.Z` while the only downloadable CLI is older.
+
+   `jitpack.yml` is kept so previously published tags (`v0.1.0`, `v0.1.1`) keep resolving for
+   anyone who pinned them; new releases go to Central and the README no longer mentions JitPack.
 
 ## Future step: Gradle Plugin Portal
 
