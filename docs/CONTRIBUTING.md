@@ -34,7 +34,7 @@ dependencyResolutionManagement {
 }
 ```
 Apply the plugin the same way as the quickstart (`id("dev.thuat.hotreload") version
-"0.1.2"`), but skip the `hotreload { runtimeCoordinate.set(...) }` override — the plugin's
+"0.1.3"`), but skip the `hotreload { runtimeCoordinate.set(...) }` override — the plugin's
 built-in default already points at the `dev.thuat` coordinate mavenLocal just published.
 
 **Composite build** — if you want changes picked up without a `publishToMavenLocal` round-trip

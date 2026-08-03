@@ -4,7 +4,7 @@ plugins {
     alias(libs.plugins.vanniktech.maven.publish)
 }
 group = "dev.thuat"
-version = "0.1.2"
+version = "0.1.3"
 android {
     namespace = "dev.thuat.hotreload.runtime"
     compileSdk = 35
