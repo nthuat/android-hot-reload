@@ -13,7 +13,7 @@ Releasing is documented in [`releasing.md`](releasing.md).
 
 If you're editing `android-hot-reload` itself, consume it locally instead of from Maven Central.
 
-**mavenLocal** — publish once, consume like any other Maven dependency:
+**mavenLocal**: publish once, consume like any other Maven dependency:
 ```bash
 cd /path/to/android-hot-reload
 export JAVA_HOME=$(/usr/libexec/java_home -v 21)  # see Requirements
@@ -22,7 +22,7 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 21)  # see Requirements
 `publishToMavenLocal` publishes both consumer-facing modules: the `dev.thuat.hotreload` Gradle
 plugin (`gradle-plugin`) and the runtime library (`dev.thuat:hotreload-runtime`).
 `:cli:installDist` builds the CLI with the JVMTI agent's `.so` files bundled inside its own
-install tree, so it finds them automatically — no `--agent-so-dir` needed. Re-run both after
+install tree, so it finds them automatically; no `--agent-so-dir` needed. Re-run both after
 pulling changes to the tool. In your app project's `settings.gradle.kts`, add `mavenLocal()` to
 both repository blocks (ahead of the others, so it's checked first):
 ```kotlin
@@ -34,10 +34,10 @@ dependencyResolutionManagement {
 }
 ```
 Apply the plugin the same way as the quickstart (`id("dev.thuat.hotreload") version
-"0.1.3"`), but skip the `hotreload { runtimeCoordinate.set(...) }` override — the plugin's
+"0.1.3"`), but skip the `hotreload { runtimeCoordinate.set(...) }` override: the plugin's
 built-in default already points at the `dev.thuat` coordinate mavenLocal just published.
 
-**Composite build** — if you want changes picked up without a `publishToMavenLocal` round-trip
+**Composite build**: if you want changes picked up without a `publishToMavenLocal` round-trip
 each time:
 ```kotlin
 pluginManagement {
@@ -51,7 +51,7 @@ way so the sample always builds against source.) Apply the plugin the same way b
 version: `id("dev.thuat.hotreload")`.
 
 **Measured cost of the composite route**: Gradle re-configures the entire 4-module tool build
-every reload cycle — `./gradlew help -q` in the tool repo alone costs ~1.7–3.8s. On a real
+every reload cycle: `./gradlew help -q` in the tool repo alone costs ~1.7-3.8s. On a real
 consumer project this accounted for roughly half the `compile` phase of each reload; switching to
 mavenLocal dropped median total cycle time from ~6.8s to ~4.0s (median compile 3.5s → 2.1s,
 5-run samples, contended dev machine). Use the composite route only when you need source changes

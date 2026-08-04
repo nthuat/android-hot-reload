@@ -101,10 +101,10 @@ if command -v java >/dev/null 2>&1; then
         1) major=$(printf '%s' "$java_version_line" | sed -E 's/.*"1\.([0-9]+).*/\1/') ;;
     esac
     if ! [ "$major" -ge 17 ] 2>/dev/null; then
-        warn "detected $java_version_line — hotreload needs JDK 17+. Install one and set JAVA_HOME, or put a JDK 17+ 'java' first on PATH."
+        warn "detected $java_version_line, but hotreload needs JDK 17+. Install one and set JAVA_HOME, or put a JDK 17+ 'java' first on PATH."
     fi
 else
-    warn "no 'java' found on PATH — hotreload needs JDK 17+ on PATH or JAVA_HOME."
+    warn "no 'java' found on PATH. hotreload needs JDK 17+ on PATH or JAVA_HOME."
 fi
 
 log ""
