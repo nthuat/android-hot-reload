@@ -1,4 +1,6 @@
 import org.gradle.api.tasks.Copy
+import org.gradle.api.tasks.bundling.Tar
+import org.gradle.api.tasks.bundling.Zip
 import org.gradle.jvm.application.tasks.CreateStartScripts
 
 plugins { alias(libs.plugins.kotlin.jvm); application }
@@ -62,6 +64,26 @@ tasks.named<CreateStartScripts>("startScripts") {
         )
     }
 }
+
+// Pin distZip/distTar to a version-independent "cli.zip"/"cli.tar" with a "cli/" root directory,
+// no matter what `version` (above) is set to. Both consumers of this archive hard-code that exact
+// layout: install.sh greps for a literal "cli/bin/cli$" entry and moves "extracted/cli" into
+// place, and InstallCliTask.unzip unpacks entry names verbatim, expecting the top-level entry to
+// land exactly at its outputDir. Without this, the application plugin's default naming bakes
+// `version` into both the archive file name and the root directory inside it (e.g.
+// "cli-0.1.6.zip" containing "cli-0.1.6/") -- which is exactly what shipped a broken v0.1.6
+// release: a stale cli.zip (no version) sat in the GitHub Release next to a correctly-built-but-
+// never-uploaded cli-0.1.6.zip, and nothing caught the mismatch. distributionBaseName pins the
+// root directory name; archiveVersion.set("") on each archive task drops the version suffix from
+// both the file name and, since it shares the same base-name+version convention, the root
+// directory too (confirmed by inspecting the built zip's own entries, not just the file name).
+distributions {
+    main {
+        distributionBaseName.set("cli")
+    }
+}
+tasks.named<Zip>("distZip") { archiveVersion.set("") }
+tasks.named<Tar>("distTar") { archiveVersion.set("") }
 
 // Ship the agent's built .so files inside the CLI's own distribution, laid out by ABI
 // (<installDir>/agent/<abi>/libhotreload_agent.so), so a fresh consumer never has to locate or
