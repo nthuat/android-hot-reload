@@ -9,6 +9,7 @@ application {
 dependencies {
     implementation(libs.gradle.tooling.api)
     implementation(libs.r8)
+    implementation(libs.asm.tree)
     runtimeOnly("org.slf4j:slf4j-simple:2.0.16") // tooling API logs
     testImplementation(libs.junit4)
     testImplementation(kotlin("test"))

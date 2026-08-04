@@ -5,6 +5,7 @@ composeBom = "2024.12.01"
 r8 = "8.5.35"
 toolingApi = "8.11.1"
 vanniktechMavenPublish = "0.34.0"
+asm = "9.7.1"
 
 [libraries]
 gradle-tooling-api = { module = "org.gradle:gradle-tooling-api", version.ref = "toolingApi" }
@@ -12,6 +13,11 @@ r8 = { module = "com.android.tools:r8", version.ref = "r8" }
 compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
 junit4 = { module = "junit:junit", version = "4.13.2" }
 compose-compiler-gradle-plugin = { module = "org.jetbrains.kotlin:compose-compiler-gradle-plugin", version.ref = "kotlin" }
+# ASM tree API: reads RuntimeInvisibleAnnotations off compiled .class files (class- and
+# method-level FunctionKeyMeta) — see KeyMetaExtractor.kt. r8 is already a CLI dependency but
+# its bundled ASM fork is repackaged/internal (com.android.tools.r8.com.google...), not usable
+# as org.objectweb.asm — an explicit dependency is clearer than relying on an internal transitive.
+asm-tree = { module = "org.ow2.asm:asm-tree", version.ref = "asm" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
