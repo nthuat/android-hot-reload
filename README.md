@@ -26,7 +26,15 @@ multi-module builds:
 plugins { id("dev.thuat.hotreload") version "0.1.5" }
 ```
 
-**2. Install the CLI:**
+**2. Get the CLI.** From the project you just configured — this fetches the CLI matching your
+plugin version, so the two can't drift:
+
+```bash
+./gradlew hotReloadInstallCli
+```
+
+It prints the exact command to run, with your project path and `applicationId` filled in.
+Prefer a global `hotreload` command usable across projects? Install it instead:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nthuat/android-hot-reload/main/install.sh | sh
@@ -35,7 +43,8 @@ curl -fsSL https://raw.githubusercontent.com/nthuat/android-hot-reload/main/inst
 **3. Build, install and launch your debug build as usual**, then:
 
 ```bash
-hotreload run --project . --package your.app.package
+./build/hotreload/cli/bin/cli run --project . --package your.app.package
+# or, if you used install.sh:  hotreload run --project . --package your.app.package
 ```
 
 Edit a composable, hit save. That's it.
@@ -88,9 +97,13 @@ now, and Gradle needs a specific-enough version to run at all — see the JDK-Gr
 table in Gradle's docs). Fix it with `export JAVA_HOME=$(/usr/libexec/java_home -v 21)` (macOS) or
 point just this tool at a different JDK with `--java-home <path>`, without touching your shell.
 
-**Gradle task** — `./gradlew hotReloadInstallCli` downloads the release matching this project's
-plugin version, so the CLI can't drift from the plugin, and unpacks it to `build/hotreload/cli/`.
-Requires plugin **0.1.4+**.
+`hotReloadInstallCli` (step 2 above) unpacks to `build/hotreload/cli/` and requires plugin
+**0.1.4+**. Re-running is a no-op once the matching version is present.
+
+**Version matching matters**: the CLI and the on-device agent speak a private protocol that
+changes between releases, so keep the CLI on the same version as the plugin. The Gradle task
+guarantees this; with `install.sh`, pin explicitly via `HOTRELOAD_VERSION=v0.1.5` if you hold the
+plugin back.
 
 **Manual** — grab `cli.zip` from the [latest release](../../releases) and unzip it.
 </details>
