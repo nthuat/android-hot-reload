@@ -90,7 +90,7 @@ point just this tool at a different JDK with `--java-home <path>`, without touch
 
 **Gradle task** — `./gradlew hotReloadInstallCli` downloads the release matching this project's
 plugin version, so the CLI can't drift from the plugin, and unpacks it to `build/hotreload/cli/`.
-Requires plugin **0.1.5+**.
+Requires plugin **0.1.4+**.
 
 **Manual** — grab `cli.zip` from the [latest release](../../releases) and unzip it.
 </details>
@@ -100,9 +100,19 @@ Requires plugin **0.1.5+**.
 `0.1.5` — composable **body** reloads. See [Supported / unsupported changes](#supported--unsupported-changes)
 for the exact boundary.
 
-Verified end to end on an API 34 x86_64 emulator and a physical arm64 device (Samsung SM-F731B,
-Android 15), against this repo's `sample/` project and a real third-party multi-module Compose
-app, where a typical reload is ~4s. `e2e/run-e2e.sh` covers the golden path and the
+**Verified against:**
+
+| | Versions |
+| --- | --- |
+| Android Gradle Plugin | 8.7 and 9.2 (AGP 9 moved Kotlin's class output; both layouts handled) |
+| Kotlin | 2.1 and 2.4 |
+| Compose runtime | 1.7 and 1.11 (both reach tier 1 — see [Reload tiers](#reload-tiers)) |
+| Device | API 26+ — physical arm64 (Samsung SM-F731B, Android 15) and x86_64 emulator |
+| App `minSdk` | any; the runtime library declares 21, hot reload needs an API 26+ *device* |
+
+Exercised on this repo's `sample/`, a real third-party multi-module app, and Google's
+[compose-samples/JetNews](https://github.com/android/compose-samples). A typical reload is ~3-4s
+on a small app, ~8s on JetNews. `e2e/run-e2e.sh` covers the golden path and the
 incompatible-change rejection path, and runs on every push.
 
 ## Supported / unsupported changes
@@ -150,6 +160,10 @@ Each reload picks the strongest tier that succeeds, logged at tag `HotReload`:
 
 1. **`tier1: group-key invalidation`** — recomposes only the scopes belonging to the redefined
    class's Compose group keys. Preserves `remember` state everywhere else in the composition.
+   The keys are read from the changed `.class` bytecode on your machine and sent with the reload:
+   Compose 1.11 emits `@FunctionKeyMeta` with `BINARY` retention directly on methods, which
+   on-device reflection cannot see, so extracting them host-side is what makes tier 1 work on
+   current Compose as well as older versions.
 2. **`tier2: whole-composition rebuild via HotReloader`** — falls back to disposing and
    rebuilding the entire composition when group-key invalidation isn't reachable. Loses all
    `remember` state, not just the edited scope's.
