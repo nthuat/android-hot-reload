@@ -16,6 +16,10 @@ class ReloadConfig(
     // independently-run hotreload sessions on one machine (two consumer projects, or an e2e run
     // against the sample app) don't collide. `--port` (Main.kt) overrides this explicitly.
     val localPort: Int = derivePort(pkg),
+    // --java-home (Main.kt): points the Tooling API's build daemon at a specific JDK instead of
+    // the CLI's own JVM (GradleCompiler.compile's default) — the fix for a JDK too new for the
+    // consumer project's Gradle version (see JdkPreflight.kt) without touching the user's shell.
+    val javaHome: Path? = null,
 )
 
 sealed class CycleOutcome {
@@ -40,6 +44,11 @@ sealed class CycleOutcome {
     data class CompileError(val output: String) : CycleOutcome()
     data class Incompatible(val reason: String) : CycleOutcome()
     data class DeviceError(val reason: String) : CycleOutcome()
+    // Environment problem, not the user's source or the device: a JDK too new for the consumer
+    // project's Gradle version (see JdkPreflight.kt). Kept distinct from DeviceError — that name
+    // stops making sense for "your JDK is wrong" — while sharing its exit code (3), since both
+    // are "the CLI can't proceed for reasons outside the user's changed code".
+    data class EnvironmentError(val reason: String) : CycleOutcome()
     object NoChanges : CycleOutcome()
 }
 
@@ -97,7 +106,7 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
     private val resolver = ModuleResolver(config.projectDir)
     private val differ = ClassDiffer()
     private val store = BaselineStore(config.projectDir.resolve(".hotreload/baseline.txt"))
-    private val compiler = GradleCompiler(config.projectDir, config.appModule)
+    private val compiler = GradleCompiler(config.projectDir, config.appModule, config.javaHome)
     private val dexer = DexPackager(config.projectDir, config.appModule)
 
     private fun allClassDirs() = resolver.allModules().flatMap(resolver::classDirsOf)
@@ -228,7 +237,18 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         var t = System.currentTimeMillis()
         val compileResult = compiler.compile()
         val compileMs = System.currentTimeMillis() - t
-        if (!compileResult.success) return CycleOutcome.CompileError(compileResult.output)
+        if (!compileResult.success) {
+            // Preflight (Main.kt, before this cycle ever started) already ruled out the CLI's own
+            // JVM being too new — this catches the late case: a project-pinned org.gradle.java.home
+            // or toolchain resolving to a different, unsupported JDK that preflight couldn't have
+            // seen coming. Raw output is always preserved; the hint is only ever appended.
+            val hint = unsupportedJvmHint(compileResult.output, readWrapperGradleVersion(config.projectDir))
+            return if (hint != null) {
+                CycleOutcome.EnvironmentError("${compileResult.output}\n\n$hint")
+            } else {
+                CycleOutcome.CompileError(compileResult.output)
+            }
+        }
 
         t = System.currentTimeMillis()
         val current = differ.snapshot(allClassDirs())

@@ -29,7 +29,16 @@ fun main(args: Array<String>) {
         ),
         appModule = opts["app-module"] ?: ":app",
         localPort = opts["port"]?.let { it.toIntOrNull() ?: fail("--port must be an integer, got '$it'") } ?: derivePort(pkg),
+        javaHome = opts["java-home"]?.let { Paths.get(it) },
     )
+
+    // Before any device or compile work (bootstrap/cycle/run all reach here first): the Tooling
+    // API uses the CLI's own JVM (or --java-home) for the consumer project's build daemon by
+    // default, and a JDK too new for that project's Gradle version is the single most likely
+    // first-run failure — most default JDKs are 22+ now. See JdkPreflight.kt for the version-
+    // ceiling logic and where each number comes from.
+    jdkPreflightCheck(projectDir, config.javaHome)?.let { exitWith(it) }
+
     val orchestrator = ReloadOrchestrator(config)
 
     when (cmd) {
@@ -154,6 +163,7 @@ private fun report(outcome: CycleOutcome) {
         is CycleOutcome.CompileError -> println("✗ compile error:\n${outcome.output}")
         is CycleOutcome.Incompatible -> println("✗ incompatible change: ${outcome.reason}\n  → run a full rebuild + reinstall, then 'hotreload bootstrap' again")
         is CycleOutcome.DeviceError -> println("✗ device/agent: ${outcome.reason}")
+        is CycleOutcome.EnvironmentError -> println("✗ environment: ${outcome.reason}")
     }
 }
 
@@ -164,7 +174,7 @@ private fun exitWith(outcome: CycleOutcome): Nothing {
             is CycleOutcome.Reloaded, CycleOutcome.NoChanges -> 0
             is CycleOutcome.CompileError -> 1
             is CycleOutcome.Incompatible -> 2
-            is CycleOutcome.DeviceError -> 3
+            is CycleOutcome.DeviceError, is CycleOutcome.EnvironmentError -> 3
         }
     )
 }
@@ -179,7 +189,8 @@ private fun usage(): Nothing {
     println(
         "usage: hotreload <bootstrap|cycle|run> --project <dir> --package <pkg> [--serial S] " +
             "[--file f.kt] [--adb path] [--agent-so-dir dir] [--app-module :app] " +
-            "[--port N (default: derived per-package, see ReloadOrchestrator.derivePort)]"
+            "[--port N (default: derived per-package, see ReloadOrchestrator.derivePort)] " +
+            "[--java-home <path> (run the build daemon on a specific JDK instead of this CLI's own)]"
     )
     exitProcess(64)
 }

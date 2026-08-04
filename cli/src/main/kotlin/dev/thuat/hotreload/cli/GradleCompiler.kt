@@ -14,7 +14,10 @@ data class CompileResult(val success: Boolean, val output: String)
 // the app module's merge-dex tasks, so compile errors surface regardless of which module a
 // change lives in. v1 assumes a conventional single top-level app module (default ":app",
 // same assumption DexPackager makes) rather than targeting the changed file's own module.
-class GradleCompiler(private val projectDir: Path, private val appModule: String = ":app") {
+// javaHome (--java-home, Main.kt): points the Tooling API's build daemon at a specific JDK
+// instead of the connector's default (the CLI's own JVM) — lets a user work around a JDK too new
+// for the consumer project's Gradle version (see JdkPreflight.kt) without touching their shell.
+class GradleCompiler(private val projectDir: Path, private val appModule: String = ":app", private val javaHome: Path? = null) {
     fun compile(): CompileResult {
         val out = ByteArrayOutputStream()
         return GradleConnector.newConnector()
@@ -22,11 +25,12 @@ class GradleCompiler(private val projectDir: Path, private val appModule: String
             .connect()
             .use { connection ->
                 try {
-                    connection.newBuild()
+                    val build = connection.newBuild()
                         .forTasks("$appModule:mergeProjectDexDebug", "$appModule:mergeLibDexDebug")
                         .setStandardOutput(out)
                         .setStandardError(out)
-                        .run()
+                    if (javaHome != null) build.setJavaHome(javaHome.toFile())
+                    build.run()
                     CompileResult(true, out.toString())
                 } catch (e: Exception) {
                     CompileResult(false, out.toString() + "\n" + (e.message ?: e.toString()))

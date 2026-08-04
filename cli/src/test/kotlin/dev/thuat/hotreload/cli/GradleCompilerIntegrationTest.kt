@@ -20,6 +20,28 @@ class GradleCompilerIntegrationTest {
         assertTrue(Files.exists(sample.resolve("app/build/intermediates/dex/debug/mergeLibDexDebug")))
     }
 
+    // --java-home evidence: a bogus path forwarded all the way to
+    // BuildLauncher.setJavaHome causes the Tooling API connector to fail trying to use it — if
+    // GradleCompiler's javaHome parameter were silently dropped instead of reaching the
+    // connector, this would succeed exactly like the no-arg test above.
+    @Test
+    fun `java-home is forwarded to the tooling API connector`() {
+        assumeTrue(Files.exists(sample.resolve("settings.gradle.kts")))
+        val bogusJavaHome = Paths.get("/not/a/real/jdk-install")
+        val result = GradleCompiler(sample, javaHome = bogusJavaHome).compile()
+        assertTrue(!result.success, result.output)
+    }
+
+    // A valid --java-home still builds successfully — proves the parameter isn't just forwarded,
+    // it's forwarded correctly (a real JDK still works, not just "any path breaks the build").
+    @Test
+    fun `a valid java-home still builds successfully`() {
+        assumeTrue(Files.exists(sample.resolve("settings.gradle.kts")))
+        val javaHome = Paths.get(System.getProperty("java.home"))
+        val result = GradleCompiler(sample, javaHome = javaHome).compile()
+        assertTrue(result.success, result.output)
+    }
+
     @Test
     fun `broken source in a dependency module surfaces as a compile failure`() {
         assumeTrue(Files.exists(sample.resolve("settings.gradle.kts")))

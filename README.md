@@ -82,6 +82,12 @@ Besides `run` (watch mode), the CLI has `bootstrap` (attach once) and `cycle --f
 (reload once) for scripting. Requires JDK 17+ on `PATH`/`JAVA_HOME`. The 17.7 MB download bundles
 the JVMTI agent for `arm64-v8a` and `x86_64`, so there's no `--agent-so-dir` to set.
 
+The build daemon for your project runs on the CLI's own JVM by default, which fails fast with an
+actionable message if it's too new for your project's Gradle version (most default JDKs are 22+
+now, and Gradle needs a specific-enough version to run at all — see the JDK-Gradle compatibility
+table in Gradle's docs). Fix it with `export JAVA_HOME=$(/usr/libexec/java_home -v 21)` (macOS) or
+point just this tool at a different JDK with `--java-home <path>`, without touching your shell.
+
 **Gradle task** — `./gradlew hotReloadInstallCli` downloads the release matching this project's
 plugin version, so the CLI can't drift from the plugin, and unpacks it to `build/hotreload/cli/`.
 Requires plugin **0.1.4+**.
