@@ -68,6 +68,44 @@ class HotReloadWrapperScriptTest {
     }
 
     @Test
+    fun `sdk dir present sets ANDROID_HOME only when unset and points at the resolved path`() {
+        val sdkDir = File("/abs/android-sdk")
+        val script = HotReloadWrapperScript.content(projectDir, "com.example.app", "0.1.5", sdkDir)
+        assertTrue(
+            script.contains(": \"\${ANDROID_HOME:=/abs/android-sdk}\"\nexport ANDROID_HOME\n"),
+            "expected a conditional-assign + export of ANDROID_HOME, got:\n$script",
+        )
+    }
+
+    @Test
+    fun `sdk dir absent adds no SDK line, rest of script identical to sdk dir present`() {
+        val withSdk = HotReloadWrapperScript.content(projectDir, "com.example.app", "0.1.5", File("/abs/android-sdk"))
+        val withoutSdk = HotReloadWrapperScript.content(projectDir, "com.example.app", "0.1.5", null)
+        // No executable SDK line (the header prose still mentions ANDROID_HOME generically --
+        // see the byte-for-byte comparison below, which is the precise assertion).
+        assertTrue(withoutSdk.lines().none { it == "export ANDROID_HOME" || it.startsWith(": \"\${ANDROID_HOME:=") })
+        val withoutSdkNoDefaultArg = HotReloadWrapperScript.content(projectDir, "com.example.app", "0.1.5")
+        assertEquals(withoutSdk, withoutSdkNoDefaultArg)
+        // Only the two SDK lines differ; everything else (header, exec line, project/package) is
+        // byte-for-byte the same in both.
+        val sdkLines = setOf(": \"\${ANDROID_HOME:=/abs/android-sdk}\"", "export ANDROID_HOME")
+        assertEquals(
+            withoutSdk.lines(),
+            withSdk.lines().filterNot { it in sdkLines },
+        )
+    }
+
+    @Test
+    fun `a user-exported ANDROID_HOME is not overridden by the generated line`() {
+        val script = HotReloadWrapperScript.content(projectDir, "com.example.app", "0.1.5", File("/abs/android-sdk"))
+        val sdkLine = script.lines().single { it.startsWith(": ") }
+        // Must be the conditional-assign form ("${ANDROID_HOME:=...}"), not a plain
+        // ANDROID_HOME=... assignment -- a plain assignment would clobber a caller's own export.
+        assertEquals(": \"\${ANDROID_HOME:=/abs/android-sdk}\"", sdkLine)
+        assertTrue(sdkLine.contains(":="), "expected the POSIX \${VAR:=default} form, got: $sdkLine")
+    }
+
+    @Test
     fun `isOwnFile is true only for content carrying the marker`() {
         assertTrue(HotReloadWrapperScript.isOwnFile(HotReloadWrapperScript.content(projectDir, "p", "0.1.5")))
         assertEquals(false, HotReloadWrapperScript.isOwnFile("#!/bin/sh\necho hi\n"))

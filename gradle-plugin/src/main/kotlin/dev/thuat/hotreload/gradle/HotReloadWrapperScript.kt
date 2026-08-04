@@ -27,27 +27,44 @@ object HotReloadWrapperScript {
      * into a map via `toMap()`, which keeps the LAST occurrence of a key, so anything the caller
      * passes on top (e.g. `./hotreload run --project /other/path`) wins over the baked-in default
      * instead of being shadowed by it.
+     *
+     * [sdkDir], when non-null (see [AndroidSdkResolution]), is baked in as an `ANDROID_HOME`
+     * export instead of a CLI flag: the CLI (`Main.kt`'s `defaultAdb()`) only reads `ANDROID_HOME`
+     * for the adb path when no `--adb` is passed, but exporting the env var also reaches the
+     * nested Gradle Tooling API build `GradleCompiler` spawns to compile/dex the edited file,
+     * which needs AGP to resolve the same SDK there — a plain `--adb` flag would cover only the
+     * first of those. Uses `: "${'$'}{ANDROID_HOME:=...}"` (a POSIX no-op with a parameter-expansion
+     * side effect) rather than an unconditional assignment, so a value the caller already exported
+     * is never clobbered.
      */
-    fun content(projectDir: File, applicationId: String, pluginVersion: String): String {
+    fun content(projectDir: File, applicationId: String, pluginVersion: String, sdkDir: File? = null): String {
         val pkg = applicationId.ifBlank { "your.app.package" }
+        val sdkLines = if (sdkDir != null) {
+            ": \"${'$'}{ANDROID_HOME:=${sdkDir.absolutePath}}\"\nexport ANDROID_HOME\n"
+        } else {
+            ""
+        }
         return """
             |#!/bin/sh
             |$MARKER
             |# Plugin version: $pluginVersion
             |#
             |# Thin wrapper around the CLI hotReloadInstallCli downloaded, with --project/--package
-            |# baked in so day-to-day use needs no flags:
+            |# (and, when this plugin could resolve one, ANDROID_HOME) baked in so day-to-day use
+            |# needs no flags and no environment to export:
             |#   ./hotreload run                       # watch mode
             |#   ./hotreload bootstrap                  # re-attach after the app restarts
             |#   ./hotreload cycle --file path/to/File.kt
             |# Flags you pass win over the baked-in --project/--package (they come after on the
             |# command line, and the CLI keeps the last occurrence of a repeated flag), e.g.:
             |#   ./hotreload run --serial emulator-5554
+            |# A baked-in ANDROID_HOME below is only set if not already exported, so a deliberate
+            |# override in your shell always wins.
             |#
             |# This file has machine-specific absolute paths -- add it to .gitignore.
             |set -e
             |script_dir=${'$'}(CDPATH= cd -- "${'$'}(dirname -- "${'$'}0")" && pwd)
-            |cmd="${'$'}1"
+            |${sdkLines}cmd="${'$'}1"
             |if [ "${'$'}#" -gt 0 ]; then shift; fi
             |exec "${'$'}script_dir/build/hotreload/cli/bin/cli" "${'$'}cmd" --project "${projectDir.absolutePath}" --package "$pkg" "${'$'}@"
             |
@@ -61,7 +78,7 @@ object HotReloadWrapperScript {
      * Writes the wrapper into [projectDir], refusing to overwrite a pre-existing file that isn't
      * one of ours. Sets the executable bit like [InstallCliTask.install] does for `bin/cli`.
      */
-    fun writeTo(projectDir: File, applicationId: String, pluginVersion: String): File {
+    fun writeTo(projectDir: File, applicationId: String, pluginVersion: String, sdkDir: File? = null): File {
         val file = File(projectDir, FILE_NAME)
         if (file.isFile && !isOwnFile(file.readText())) {
             throw GradleException(
@@ -70,7 +87,7 @@ object HotReloadWrapperScript {
                     "re-run hotReloadInstallCli.",
             )
         }
-        file.writeText(content(projectDir, applicationId, pluginVersion))
+        file.writeText(content(projectDir, applicationId, pluginVersion, sdkDir))
         file.setExecutable(true, false)
         return file
     }

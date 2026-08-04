@@ -116,6 +116,7 @@ private fun registerInstallCliTask(project: Project) {
         // one optional nicety. Any failure (no "android" extension, method shape differs, no
         // application module at all) falls back to a placeholder in the printed command.
         task.applicationId.set(project.provider { findApplicationId(root) ?: "" })
+        task.androidSdkDir.set(project.provider { resolveSdkDir(root)?.absolutePath ?: "" })
     }
 }
 
@@ -125,6 +126,25 @@ private fun findApplicationId(root: Project): String? = runCatching {
         val android = p.extensions.findByName("android") ?: return@firstNotNullOfOrNull null
         val defaultConfig = android.javaClass.getMethod("getDefaultConfig").invoke(android)
         defaultConfig?.javaClass?.getMethod("getApplicationId")?.invoke(defaultConfig) as? String
+    }
+}.getOrNull()
+
+/** See [AndroidSdkResolution] for the priority order and why each rung falls back to the next. */
+private fun resolveSdkDir(root: Project): File? = AndroidSdkResolution.resolve(
+    agpSdkDir = findAgpSdkDir(root),
+    localPropertiesFile = File(root.projectDir, "local.properties"),
+    env = System.getenv(),
+)
+
+/**
+ * `BaseExtension.getSdkDirectory(): File` is a stable public AGP API (unchanged across AGP
+ * 8.x/9.x), but calling it directly would need a `compileOnly` AGP dependency this module
+ * deliberately avoids -- same reflection trick as [findApplicationId], and for the same reason.
+ */
+private fun findAgpSdkDir(root: Project): File? = runCatching {
+    root.allprojects.firstNotNullOfOrNull { p ->
+        val android = p.extensions.findByName("android") ?: return@firstNotNullOfOrNull null
+        android.javaClass.getMethod("getSdkDirectory").invoke(android) as? File
     }
 }.getOrNull()
 

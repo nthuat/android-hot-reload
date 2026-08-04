@@ -43,10 +43,17 @@ abstract class InstallCliTask : DefaultTask() {
     @get:Internal
     abstract val applicationId: Property<String>
 
+    // Same treatment as applicationId above: doesn't affect what's downloaded (not @Input), only
+    // what gets baked into the wrapper script -- see AndroidSdkResolution for the resolution
+    // priority and why this is best-effort (empty when nothing resolves).
+    @get:Internal
+    abstract val androidSdkDir: Property<String>
+
     init {
         group = "hot reload"
         description = "Downloads the cli.zip release matching this plugin's version into build/hotreload/cli."
         applicationId.convention("")
+        androidSdkDir.convention("")
     }
 
     @TaskAction
@@ -80,7 +87,8 @@ abstract class InstallCliTask : DefaultTask() {
     /** See [HotReloadWrapperScript] for the generated content and the clobber guard. */
     private fun writeWrapper(resolvedVersion: String): File {
         val pkg = applicationId.orNull?.takeIf { it.isNotBlank() } ?: ""
-        return HotReloadWrapperScript.writeTo(projectDir.get().asFile, pkg, resolvedVersion)
+        val sdkDir = androidSdkDir.orNull?.takeIf { it.isNotBlank() }?.let(::File)
+        return HotReloadWrapperScript.writeTo(projectDir.get().asFile, pkg, resolvedVersion, sdkDir)
     }
 
     private fun download(resolvedVersion: String, targetDir: File) {
