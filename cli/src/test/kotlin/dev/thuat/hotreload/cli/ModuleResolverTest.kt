@@ -76,11 +76,20 @@ class ModuleResolverTest {
     }
 
     @Test
-    fun `classDirsOf errors loudly naming every path it checked when none exist`() {
+    fun `classDirsOf returns empty for a module with no class output rather than failing`() {
+        // com.android.test modules (baseline-profile, benchmark) and resource-only libraries
+        // legitimately produce no classes; failing here killed the whole run on real projects.
         val root = project()
-        val error = assertFailsWith<IllegalStateException> { ModuleResolver(root).classDirsOf(":feature") }
-        assertTrue(error.message!!.contains("build/tmp/kotlin-classes/debug"))
-        assertTrue(error.message!!.contains("built_in_kotlinc"))
-        assertTrue(error.message!!.contains(":feature"))
+        assertTrue(ModuleResolver(root).classDirsOf(":feature").isEmpty())
+    }
+
+    @Test
+    fun `classDirCandidatesFor names every layout probed, for aggregate error reporting`() {
+        val root = project()
+        val candidates = ModuleResolver(root).classDirCandidatesFor(":feature").map { it.toString() }
+        assertTrue(candidates.any { it.contains("build/tmp/kotlin-classes/debug") })
+        assertTrue(candidates.any { it.contains("built_in_kotlinc") })
+        assertTrue(candidates.any { it.contains("javac") })
+        assertTrue(candidates.all { it.contains("feature") })
     }
 }

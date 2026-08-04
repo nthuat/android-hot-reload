@@ -109,7 +109,22 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
     private val compiler = GradleCompiler(config.projectDir, config.appModule, config.javaHome)
     private val dexer = DexPackager(config.projectDir, config.appModule)
 
-    private fun allClassDirs() = resolver.allModules().flatMap(resolver::classDirsOf)
+    // Modules with no class output are skipped, not fatal — com.android.test (baseline-profile,
+    // benchmark) modules and resource-only libraries legitimately have none. Only an empty
+    // aggregate means the layout probe is wrong, and that is worth failing loudly on: it is what
+    // made the AGP 9 breakage present as "no bytecode changes" forever instead of an error.
+    private fun allClassDirs(): List<java.nio.file.Path> {
+        val modules = resolver.allModules()
+        val dirs = modules.flatMap(resolver::classDirsOf)
+        check(dirs.isNotEmpty()) {
+            "no compiled-class output found in any module — looked for:\n" +
+                modules.flatMap(resolver::classDirCandidatesFor).joinToString("\n") { "  - $it" } +
+                "\n(checked AGP 8 + Kotlin-Gradle-Plugin, AGP 9 built-in-Kotlin, and javac layouts). " +
+                "Build the app first (./gradlew ${config.appModule}:assembleDebug), or this project's " +
+                "toolchain uses a layout this tool doesn't know about yet."
+        }
+        return dirs
+    }
 
     fun bootstrap(): CycleOutcome {
         deviceNotReadyError()?.let { return it }

@@ -42,17 +42,23 @@ class ModuleResolver(private val projectDir: Path) {
             moduleDir.resolve("build/intermediates/built_in_kotlinc/$VARIANT/compile${variantCap}Kotlin/classes"),
             moduleDir.resolve("build/intermediates/javac/$VARIANT/compile${variantCap}JavaWithJavac/classes"),
         )
-        val existing = candidates.filter(Files::isDirectory)
-        if (existing.isEmpty()) {
-            error(
-                "no compiled-class output found for module $module — looked for:\n" +
-                    candidates.joinToString("\n") { "  - $it" } +
-                    "\n(checked AGP 8 + Kotlin-Gradle-Plugin layout, AGP 9 built-in-Kotlin layout, " +
-                    "and javac output). Run a build first (./gradlew $module:assembleDebug), or this " +
-                    "module's AGP/Kotlin toolchain uses a layout this tool doesn't know about yet."
-            )
-        }
-        return existing
+        // A module with no class output is normal, not an error: com.android.test modules
+        // (baseline-profile/benchmark), resource-only libraries, and modules with no debug variant
+        // all legitimately produce nothing. Returning empty lets them contribute nothing to the
+        // diff. Only the aggregate being empty across EVERY module means we're looking in the
+        // wrong place — the caller reports that, with these candidate paths.
+        return candidates.filter(Files::isDirectory)
+    }
+
+    // The paths classDirsOf probes, for error reporting when no module yielded any output.
+    fun classDirCandidatesFor(module: String): List<Path> {
+        val moduleDir = projectDir.resolve(module.removePrefix(":").replace(':', java.io.File.separatorChar))
+        val variantCap = VARIANT.replaceFirstChar(Char::uppercase)
+        return listOf(
+            moduleDir.resolve("build/tmp/kotlin-classes/$VARIANT"),
+            moduleDir.resolve("build/intermediates/built_in_kotlinc/$VARIANT/compile${variantCap}Kotlin/classes"),
+            moduleDir.resolve("build/intermediates/javac/$VARIANT/compile${variantCap}JavaWithJavac/classes"),
+        )
     }
 
     private companion object {
