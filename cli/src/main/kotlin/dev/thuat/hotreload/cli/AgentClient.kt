@@ -27,9 +27,10 @@ class AgentClient(
 
     fun ping(): Reply = request(Protocol.CMD_PING, ByteArray(0))
 
-    // records: (descriptor, deviceDexPath) pairs, all classes from one edit — see Protocol's
-    // RECORD_SEP doc for why this is one message instead of one per class.
-    fun loadDex(records: List<Pair<String, String>>): Reply =
+    // records: one LoadDexEntry per changed class, all from one edit — see Protocol's RECORD_SEP
+    // doc for why this is one message instead of one per class, and LoadDexEntry's doc for what
+    // its keys field carries.
+    fun loadDex(records: List<LoadDexEntry>): Reply =
         request(Protocol.CMD_LOAD_DEX, Protocol.encodeLoadDexPayload(records))
 
     private fun request(cmd: Byte, payload: ByteArray): Reply {

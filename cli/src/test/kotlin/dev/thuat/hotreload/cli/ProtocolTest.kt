@@ -50,21 +50,30 @@ class ProtocolTest {
         assertTrue(Protocol.STATUS_ERROR != Protocol.STATUS_OK)
     }
 
-    // F9: multi-class edits are one LOAD_DEX message carrying N "<descriptor>\n<path>"
+    // F9: multi-class edits are one LOAD_DEX message carrying N "<descriptor>\n<path>\n<keys>"
     // records joined by RECORD_SEP, so the agent can RedefineClasses them in one atomic call.
     @Test
     fun `encodeLoadDexPayload joins records with RECORD_SEP`() {
         val payload = Protocol.encodeLoadDexPayload(
-            listOf("La/Foo;" to "/data/a.dex", "Lb/Bar;" to "/data/b.dex")
+            listOf(LoadDexEntry("La/Foo;", "/data/a.dex"), LoadDexEntry("Lb/Bar;", "/data/b.dex"))
         )
         val text = String(payload, Charsets.UTF_8)
-        assertEquals("La/Foo;\n/data/a.dex${Protocol.RECORD_SEP}Lb/Bar;\n/data/b.dex", text)
+        assertEquals("La/Foo;\n/data/a.dex\n${Protocol.RECORD_SEP}Lb/Bar;\n/data/b.dex\n", text)
     }
 
     @Test
     fun `encodeLoadDexPayload with a single record has no separator`() {
-        val payload = Protocol.encodeLoadDexPayload(listOf("La/Foo;" to "/data/a.dex"))
-        assertEquals("La/Foo;\n/data/a.dex", String(payload, Charsets.UTF_8))
+        val payload = Protocol.encodeLoadDexPayload(listOf(LoadDexEntry("La/Foo;", "/data/a.dex")))
+        assertEquals("La/Foo;\n/data/a.dex\n", String(payload, Charsets.UTF_8))
+    }
+
+    // Keys extracted by KeyMetaExtractor ride along as a third, space-separated field so the
+    // on-device runtime can invalidate group keys directly instead of hunting for a holder class
+    // (see ComposeInvalidator.reload / agent.cpp NotifyRuntime).
+    @Test
+    fun `encodeLoadDexPayload appends space-separated keys as a third field`() {
+        val payload = Protocol.encodeLoadDexPayload(listOf(LoadDexEntry("La/Foo;", "/data/a.dex", listOf(123, -456))))
+        assertEquals("La/Foo;\n/data/a.dex\n123 -456", String(payload, Charsets.UTF_8))
     }
 
     // PING reply detail is "pong:<pkg>" (see Protocol.pingPackageOf's doc) — must match

@@ -7,6 +7,11 @@ import java.nio.ByteBuffer
 
 data class Reply(val status: Byte, val detail: String)
 
+// One LOAD_DEX record: a redefined class's descriptor, where its dex bytes sit on-device, and
+// the Compose group keys the CLI extracted for it (empty when extraction found none — see
+// KeyMetaExtractor.keysFor and Protocol.RECORD_SEP's doc for what an empty list means downstream).
+data class LoadDexEntry(val descriptor: String, val devicePath: String, val keys: List<Int> = emptyList())
+
 object Protocol {
     const val CMD_PING: Byte = 0x01
     const val CMD_LOAD_DEX: Byte = 0x02
@@ -20,7 +25,14 @@ object Protocol {
 
     // LOAD_DEX payload: one or more records separated by RECORD_SEP (ASCII Record Separator —
     // doesn't collide with class descriptors or filesystem paths). Each record is
-    // "<descriptor>\n<device dex path>". All classes in one message are redefined via a single
+    // "<descriptor>\n<device dex path>\n<space-separated FunctionKeyMeta keys, may be empty>".
+    // The third field carries the Compose group keys the CLI already extracted from the compiled
+    // .class file on the host (see KeyMetaExtractor) — the on-device runtime can no longer
+    // reliably find them itself on Compose 1.11+, where @FunctionKeyMeta is BINARY-retention and
+    // applied directly to compiled methods instead of a reflectable holder class. An empty third
+    // field (record ends in a bare trailing '\n') means "no keys known for this class"; the
+    // runtime falls back to its own on-device lookup for that class (see ComposeInvalidator.reload
+    // / agent.cpp NotifyRuntime). All classes in one message are redefined via a single
     // JVMTI RedefineClasses(n, defs) call on the agent side so a multi-class edit applies
     // atomically — either every class swaps or none do, never a mid-batch mix of old/new code
     // (see agent.cpp HandleLoadDex and docs/superpowers/specs' agent section).
@@ -54,9 +66,10 @@ object Protocol {
     fun pingPackageOf(detail: String): String? =
         detail.takeIf { it.startsWith(PING_REPLY_PREFIX) }?.removePrefix(PING_REPLY_PREFIX)
 
-    fun encodeLoadDexPayload(records: List<Pair<String, String>>): ByteArray =
-        records.joinToString(RECORD_SEP.toString()) { (descriptor, devicePath) -> "$descriptor\n$devicePath" }
-            .toByteArray()
+    fun encodeLoadDexPayload(records: List<LoadDexEntry>): ByteArray =
+        records.joinToString(RECORD_SEP.toString()) { r ->
+            "${r.descriptor}\n${r.devicePath}\n${r.keys.joinToString(" ")}"
+        }.toByteArray()
 
     fun encodeRequest(cmd: Byte, payload: ByteArray): ByteArray =
         ByteBuffer.allocate(4 + 1 + payload.size)

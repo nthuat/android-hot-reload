@@ -56,10 +56,10 @@ class AgentClientTest {
             }
         }
         val reply = AgentClient("localhost", server.localPort).use {
-            it.loadDex(listOf("La/Foo;" to "/data/a.dex", "Lb/Bar;" to "/data/b.dex"))
+            it.loadDex(listOf(LoadDexEntry("La/Foo;", "/data/a.dex"), LoadDexEntry("Lb/Bar;", "/data/b.dex")))
         }
         assertEquals(Protocol.CMD_LOAD_DEX, receivedCmd)
-        assertEquals("La/Foo;\n/data/a.dex${Protocol.RECORD_SEP}Lb/Bar;\n/data/b.dex", receivedPayload)
+        assertEquals("La/Foo;\n/data/a.dex\n${Protocol.RECORD_SEP}Lb/Bar;\n/data/b.dex\n", receivedPayload)
         assertEquals(Protocol.STATUS_OK, reply.status)
         server.close()
     }

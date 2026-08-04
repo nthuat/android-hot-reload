@@ -11,8 +11,10 @@
 #include <unistd.h>
 
 #include <condition_variable>
+#include <cstdlib>
 #include <fstream>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -127,19 +129,23 @@ std::string DescriptorToBinaryName(const std::string& descriptor) {
   return name;
 }
 
-// Called once per LOAD_DEX message with every redefined class's binary name (one batch, one
-// call — see HandleLoadDex), so ComposeInvalidator can union group keys across the whole edit
-// for tier-1 invalidation. Returns the tier string ComposeInvalidator.reload reports back
-// ("tier1"/"tier2"/"tier3"/"tier-timeout"), or "" if the runtime lib isn't loaded / the call
-// couldn't be made — callers must treat "" as "no tier to report", not as a real tier value.
-std::string NotifyRuntime(JNIEnv* env, const std::vector<std::string>& binary_names) {
+// Called once per LOAD_DEX message with every redefined class's binary name AND the union of
+// FunctionKeyMeta keys the CLI extracted host-side for the whole batch (one batch, one call —
+// see HandleLoadDex), so ComposeInvalidator can invalidate them directly instead of hunting for a
+// holder class on-device (see ComposeInvalidator.reload's doc — that on-device lookup still runs
+// as a fallback when keys is empty, e.g. an older CLI or a case extraction missed). Returns the
+// tier string ComposeInvalidator.reload reports back ("tier1"/"tier2"/"tier3"/"tier-timeout"), or
+// "" if the runtime lib isn't loaded / the call couldn't be made — callers must treat "" as "no
+// tier to report", not as a real tier value.
+std::string NotifyRuntime(JNIEnv* env, const std::vector<std::string>& binary_names,
+                           const std::vector<int32_t>& keys) {
   jclass cls = FindLoadedClass(env, "Ldev/thuat/hotreload/runtime/ComposeInvalidator;");
   if (cls == nullptr) {
     LOGE("ComposeInvalidator not loaded; skipping recompose signal");
     return "";
   }
   std::string tier;
-  jmethodID reload = env->GetStaticMethodID(cls, "reload", "([Ljava/lang/String;)Ljava/lang/String;");
+  jmethodID reload = env->GetStaticMethodID(cls, "reload", "([Ljava/lang/String;[I)Ljava/lang/String;");
   if (reload != nullptr) {
     jclass stringClass = env->FindClass("java/lang/String");
     jobjectArray names = env->NewObjectArray(static_cast<jsize>(binary_names.size()), stringClass, nullptr);
@@ -148,7 +154,11 @@ std::string NotifyRuntime(JNIEnv* env, const std::vector<std::string>& binary_na
       env->SetObjectArrayElement(names, static_cast<jsize>(i), s);
       env->DeleteLocalRef(s);
     }
-    auto result = static_cast<jstring>(env->CallStaticObjectMethod(cls, reload, names));
+    jintArray key_array = env->NewIntArray(static_cast<jsize>(keys.size()));
+    if (!keys.empty()) {
+      env->SetIntArrayRegion(key_array, 0, static_cast<jsize>(keys.size()), keys.data());
+    }
+    auto result = static_cast<jstring>(env->CallStaticObjectMethod(cls, reload, names, key_array));
     if (result != nullptr) {
       const char* chars = env->GetStringUTFChars(result, nullptr);
       if (chars != nullptr) {
@@ -157,6 +167,7 @@ std::string NotifyRuntime(JNIEnv* env, const std::vector<std::string>& binary_na
       }
       env->DeleteLocalRef(result);
     }
+    env->DeleteLocalRef(key_array);
     env->DeleteLocalRef(names);
     env->DeleteLocalRef(stringClass);
   }
@@ -171,19 +182,33 @@ std::string NotifyRuntime(JNIEnv* env, const std::vector<std::string>& binary_na
 struct LoadDexRecord {
   std::string descriptor;
   std::string dex_path;
+  std::vector<int32_t> keys;
 };
 
-// Splits "<descriptor>\n<dex path>" records joined by kRecordSep. Returns false (payload is
-// malformed) if any record is missing its '\n' separator or the payload is empty.
+// Splits "<descriptor>\n<dex path>\n<space-separated keys>" records joined by kRecordSep (see
+// Protocol.kt's RECORD_SEP doc — must match byte-for-byte). Returns false (payload is malformed)
+// if any record is missing either '\n' separator or the payload is empty. The keys field may be
+// empty (a bare trailing '\n', or nothing after the second '\n') — that's not malformed, it means
+// "CLI found no keys for this class", handled by ComposeInvalidator's on-device fallback.
 bool ParseLoadDexRecords(const std::string& payload, std::vector<LoadDexRecord>* out) {
   size_t start = 0;
   while (start <= payload.size()) {
     size_t sep = payload.find(kRecordSep, start);
     size_t end = (sep == std::string::npos) ? payload.size() : sep;
     std::string record = payload.substr(start, end - start);
-    size_t nl = record.find('\n');
-    if (nl == std::string::npos) return false;
-    out->push_back({record.substr(0, nl), record.substr(nl + 1)});
+    size_t nl1 = record.find('\n');
+    if (nl1 == std::string::npos) return false;
+    size_t nl2 = record.find('\n', nl1 + 1);
+    if (nl2 == std::string::npos) return false;
+    LoadDexRecord parsed;
+    parsed.descriptor = record.substr(0, nl1);
+    parsed.dex_path = record.substr(nl1 + 1, nl2 - nl1 - 1);
+    std::istringstream keys_stream(record.substr(nl2 + 1));
+    std::string tok;
+    while (keys_stream >> tok) {
+      parsed.keys.push_back(static_cast<int32_t>(std::strtol(tok.c_str(), nullptr, 10)));
+    }
+    out->push_back(std::move(parsed));
     if (sep == std::string::npos) break;
     start = sep + 1;
   }
@@ -222,9 +247,11 @@ std::string JoinDescriptors(const std::vector<std::string>& descriptors) {
 // class was loaded.
 //
 // Sets *status. On any kStatusOk return, *out_skipped holds the skipped descriptors (may be
-// empty) and *out_binary_names holds the binary names of classes actually redefined (empty iff
+// empty), *out_binary_names holds the binary names of classes actually redefined (empty iff
 // every record was skipped — the caller uses this to skip the NotifyRuntime call too, since
-// nothing changed).
+// nothing changed), and *out_keys holds the union of every redefined record's CLI-supplied keys
+// (skipped records' keys are dropped — a class the runtime never loaded has nothing to
+// invalidate).
 //
 // Reply detail format (see Protocol.kt for the CLI-side parser this must match byte-for-byte):
 //   "<result>[ | skipped <N>: <d1>, <d2>, ...][ | tierN]"
@@ -236,7 +263,8 @@ std::string JoinDescriptors(const std::vector<std::string>& descriptors) {
 // `substringAfterLast(" | ")` keeps working unchanged.
 std::string HandleLoadDex(JNIEnv* env, const std::string& payload, uint8_t* status,
                            std::vector<std::string>* out_binary_names,
-                           std::vector<std::string>* out_skipped) {
+                           std::vector<std::string>* out_skipped,
+                           std::vector<int32_t>* out_keys) {
   *status = kStatusError;
   std::vector<LoadDexRecord> records;
   if (!ParseLoadDexRecords(payload, &records)) return "malformed LOAD_DEX payload";
@@ -292,6 +320,7 @@ std::string HandleLoadDex(JNIEnv* env, const std::string& payload, uint8_t* stat
     if (!joined.empty()) joined += ", ";
     joined += records[idx].descriptor;
     out_binary_names->push_back(DescriptorToBinaryName(records[idx].descriptor));
+    out_keys->insert(out_keys->end(), records[idx].keys.begin(), records[idx].keys.end());
   }
   std::string detail = joined + ": redefined";
   if (!out_skipped->empty()) {
@@ -348,12 +377,13 @@ void ServeClient(int fd, JNIEnv* env) {
       uint8_t status = kStatusError;
       std::vector<std::string> binary_names;
       std::vector<std::string> skipped;
-      std::string detail = HandleLoadDex(env, payload, &status, &binary_names, &skipped);
+      std::vector<int32_t> keys;
+      std::string detail = HandleLoadDex(env, payload, &status, &binary_names, &skipped, &keys);
       // Only notify the runtime when something actually changed — binary_names is empty iff
       // every record in the batch was skipped as not-loaded (see HandleLoadDex), and there's no
       // point asking Compose to recompose when nothing was redefined.
       if (status == kStatusOk && !binary_names.empty()) {
-        std::string tier = NotifyRuntime(env, binary_names);
+        std::string tier = NotifyRuntime(env, binary_names, keys);
         if (!tier.empty()) detail += " | " + tier;
       }
       SendReply(fd, status, detail);
