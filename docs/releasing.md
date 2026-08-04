@@ -109,12 +109,59 @@ below assume that's still true; skip step 1 once it's done for good.
    coordinate resolution (`dev.thuat:hotreload-runtime:X.Y.Z`) is usually faster than search
    indexing.
 5. Once confirmed resolvable, bump the version references in `README.md`'s quickstart, cut a
-   matching git tag, and attach a fresh `cli.zip` (`./gradlew :cli:distZip`) to the GitHub release
-   so the tag, the release asset, and the Central version all agree: a consumer following the
-   README should never be told to apply plugin `X.Y.Z` while the only downloadable CLI is older.
+   matching git tag, and attach a fresh `cli.zip` to the GitHub release so the tag, the release
+   asset, and the Central version all agree: a consumer following the README should never be told
+   to apply plugin `X.Y.Z` while the only downloadable CLI is older.
 
    `jitpack.yml` is kept so previously published tags (`v0.1.0`, `v0.1.1`) keep resolving for
    anyone who pinned them; new releases go to Central and the README no longer mentions JitPack.
+
+## Building and verifying the `cli.zip` release asset
+
+**Why this section exists**: the `v0.1.6` release shipped a `cli.zip` built from a state before
+the version-handshake commits, even though the tag itself contained them. `./gradlew :cli:distZip`
+was run without cleaning first, so Gradle served a stale artifact, and nothing checked the
+uploaded asset against the release it was attached to before or after upload. Only the Central
+runtime AAR was checked, and the CLI zip was wrongly assumed to match it. `scripts/verify-
+release-asset.sh` (see that file for the exact checks it runs) exists so this never again depends
+on a human remembering to eyeball a zip. Follow this exact order, every release:
+
+1. **Build from a clean checkout of the tag.** Not the working tree you happened to publish from,
+   and not an incremental build that might be serving a stale output:
+   ```bash
+   git clone https://github.com/nthuat/android-hot-reload.git /tmp/release-build
+   cd /tmp/release-build
+   git checkout vX.Y.Z
+   ./gradlew :cli:distZip
+   ```
+   The result is `cli/build/distributions/cli.zip`, always named exactly that and rooted at
+   `cli/` regardless of the project's `version` (pinned in `cli/build.gradle.kts`; see that file's
+   `distributions` block for why both `install.sh` and `InstallCliTask` depend on this).
+2. **Verify the local zip before uploading anything:**
+   ```bash
+   scripts/verify-release-asset.sh X.Y.Z /tmp/release-build/cli/build/distributions/cli.zip
+   ```
+   A failure here means the build itself is wrong, fix it before it ever touches GitHub.
+3. **Upload** `cli.zip` as a release asset on the GitHub release for `vX.Y.Z`.
+4. **Verify the published asset**, downloaded fresh rather than trusting the upload:
+   ```bash
+   scripts/verify-release-asset.sh X.Y.Z
+   ```
+   A failure here (that step 2 didn't already catch) means the wrong file got uploaded, or the
+   upload was interrupted/corrupted, fix the release asset and re-run this step until it passes.
+
+Step 2 and step 4 run the same checks against two different files for a reason: step 2 catches a
+bad build before it ever reaches a user, step 4 catches a mistake made in the upload itself (wrong
+file picked, partial upload, uploaded to the wrong tag). Skipping either one is exactly how the
+`v0.1.6` incident happened.
+
+**CI**: no job currently runs the verifier automatically on release publish. Doing so would need a
+`release: { types: [published] }` trigger with a step that downloads the just-published asset and
+runs `scripts/verify-release-asset.sh` against it, gating nothing (the asset is already public by
+the time that event fires) but at least paging someone loudly on a mismatch. Left as a manual step
+for now since wiring an automatic gate around an already-published asset is a bigger design
+question (what happens on failure? un-publish? open an issue?) than this fix covers, run the two
+commands above by hand until that's decided.
 
 ## Future step: Gradle Plugin Portal
 
