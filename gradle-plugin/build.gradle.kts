@@ -4,7 +4,7 @@ plugins {
     alias(libs.plugins.vanniktech.maven.publish)
 }
 group = "dev.thuat"
-version = "0.1.5"
+version = "0.1.6"
 gradlePlugin {
     plugins {
         create("hotreload") {

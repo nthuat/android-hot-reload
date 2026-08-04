@@ -42,7 +42,7 @@ class HotReloadPlugin : Plugin<Project> {
     }
 
     companion object {
-        const val DEFAULT_RUNTIME_COORDINATE = "dev.thuat:hotreload-runtime:0.1.5"
+        const val DEFAULT_RUNTIME_COORDINATE = "dev.thuat:hotreload-runtime:0.1.6"
 
         // The module name this plugin's own jar is published under (see gradle-plugin's project
         // name in settings.gradle.kts) — needed to anchor the Maven-layout parse on the plugin's

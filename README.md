@@ -23,7 +23,7 @@ multi-module builds:
 
 ```kotlin
 // root build.gradle.kts
-plugins { id("dev.thuat.hotreload") version "0.1.5" }
+plugins { id("dev.thuat.hotreload") version "0.1.6" }
 ```
 
 **2. Get the CLI.** From the project you just configured — this fetches the CLI matching your
@@ -74,7 +74,7 @@ has composables (omitting the version fails with `gradle-plugin:null`):
 
 ```kotlin
 // root build.gradle.kts
-plugins { id("dev.thuat.hotreload") version "0.1.5" apply false }
+plugins { id("dev.thuat.hotreload") version "0.1.6" apply false }
 
 // app/build.gradle.kts, feature/build.gradle.kts, … (each module with composables)
 plugins { id("dev.thuat.hotreload") }
@@ -88,7 +88,7 @@ Mixing both styles is safe — the plugin is idempotent and won't double-configu
 
 `install.sh` puts the latest release in `~/.local/share/hotreload/<version>/` and symlinks
 `~/.local/bin/hotreload`. Re-run it to upgrade. Pin a version with
-`HOTRELOAD_VERSION=v0.1.5 curl ... | sh`.
+`HOTRELOAD_VERSION=v0.1.6 curl ... | sh`.
 
 Besides `run` (watch mode), the CLI has `bootstrap` (attach once) and `cycle --file path/to/File.kt`
 (reload once) for scripting. Requires JDK 17+ on `PATH`/`JAVA_HOME`. The 17.7 MB download bundles
@@ -107,7 +107,7 @@ matching version is present, but the `./hotreload` wrapper is regenerated every 
 
 **Version matching matters**: the CLI and the on-device agent speak a private protocol that
 changes between releases, so keep the CLI on the same version as the plugin. The Gradle task
-guarantees this; with `install.sh`, pin explicitly via `HOTRELOAD_VERSION=v0.1.5` if you hold the
+guarantees this; with `install.sh`, pin explicitly via `HOTRELOAD_VERSION=v0.1.6` if you hold the
 plugin back.
 
 **Manual** — grab `cli.zip` from the [latest release](../../releases) and unzip it.
@@ -115,7 +115,7 @@ plugin back.
 
 ## Status
 
-`0.1.5` — composable **body** reloads. See [Supported / unsupported changes](#supported--unsupported-changes)
+`0.1.6` — composable **body** reloads. See [Supported / unsupported changes](#supported--unsupported-changes)
 for the exact boundary.
 
 **Verified against:**
