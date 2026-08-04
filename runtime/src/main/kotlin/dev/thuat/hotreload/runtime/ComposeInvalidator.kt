@@ -7,6 +7,40 @@ import androidx.compose.runtime.internal.FunctionKeyMeta
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
+// Runs `invalidate` for every key, routing any thrown exception to `onFailure` instead of
+// letting it propagate (one bad key must not abort the rest of the batch). Returns whether the
+// WHOLE batch can honestly be called clean: true only if every key ran without throwing.
+//
+// This is deliberately AND, not OR (the pre-fix behavior — see the fix report for how this was
+// found: Jetcaster reproduced a real cycle where 15 of 41 keys threw
+// `InvocationTargetException` from `invalidateGroupsWithKey`, including 100% of the keys for the
+// exact class holding the edited composable, yet the batch still reported "tier1: remember state
+// preserved" because a handful of OTHER keys in the same batch happened not to throw). Compose's
+// own `invalidateGroupsWithKey` returns `Unit` whether a key matched a live group or matched
+// nothing at all, so a clean call is not proof of a real invalidation either — but it is at least
+// not proof of the opposite. A thrown exception IS proof: something about that specific key's
+// invalidation did not run, so the composable it names cannot be assumed to have re-executed.
+// One such proof anywhere in the batch is enough to withdraw the tier1 claim for the whole batch
+// and let [ComposeInvalidator.reload] fall through to tier2 (whole-composition rebuild — loses
+// `remember` state, but unconditionally re-executes every composable, so it cannot leave stale
+// bytecode on screen the way a falsely-claimed tier1 did here).
+//
+// No Android imports: kept a free function (not a method on the Log-using, Handler-using
+// ComposeInvalidator object) so it's a plain-JVM unit test target with no Robolectric/instrumented
+// test needed — see ComposeInvalidatorTest.
+internal fun invalidateAll(keys: List<Int>, invalidate: (Int) -> Unit, onFailure: (Int, Throwable) -> Unit): Boolean {
+    var failures = 0
+    for (key in keys) {
+        try {
+            invalidate(key)
+        } catch (t: Throwable) {
+            failures++
+            onFailure(key, t)
+        }
+    }
+    return failures == 0
+}
+
 object ComposeInvalidator {
     private const val TAG = "HotReload"
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -60,7 +94,12 @@ object ComposeInvalidator {
      *     CLI sent none (older CLI, or a case its host-side bytecode extraction missed) — see
      *     [keysForClass]'s doc for why that on-device lookup alone is no longer sufficient on
      *     Compose 1.11+, where `@FunctionKeyMeta` is BINARY-retention and applied directly to
-     *     compiled methods instead of a reflectable holder class.
+     *     compiled methods instead of a reflectable holder class. Only claimed when EVERY key in
+     *     the batch invalidated without throwing (see [invalidateAll]'s doc) — a batch with even
+     *     one thrown exception falls through to tier 2 instead of reporting a false tier1
+     *     (reproduced live against Jetcaster: some keys threw `InvocationTargetException` while
+     *     others in the same batch didn't, and the pre-fix "any key succeeded" check reported
+     *     tier1 for a reload that provably never re-executed the edited composable).
      *  2. Whole-composition rebuild via `HotReloader` reflection — loses `remember` state.
      *  3. `Activity.recreate()` — last resort when Compose's runtime hooks are unreachable.
      */
@@ -150,16 +189,9 @@ object ComposeInvalidator {
 
     private fun invalidateGroupsWithKeys(keys: List<Int>): Boolean {
         val invalidate = resolveInvalidateGroupsWithKey() ?: return false
-        var any = false
-        for (key in keys) {
-            try {
-                invalidate(key)
-                any = true
-            } catch (t: Throwable) {
-                Log.w(TAG, "invalidateGroupsWithKey($key) failed: ${t.javaClass.simpleName}: ${t.message}")
-            }
+        return invalidateAll(keys, invalidate) { key, t ->
+            Log.w(TAG, "invalidateGroupsWithKey($key) failed: ${t.javaClass.simpleName}: ${t.message}")
         }
-        return any
     }
 
     // Same hook Android Studio Live Edit uses. Probe the public wrapper first, then the

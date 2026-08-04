@@ -39,6 +39,11 @@ dependencies {
     // compileOnly: the app supplies its own Compose runtime; we only reflect into it
     compileOnly(platform(libs.compose.bom))
     compileOnly("androidx.compose.runtime:runtime")
+
+    // Plain-JVM unit tests only (see ComposeInvalidatorTest): invalidateAll has no Android
+    // imports, so no Robolectric/instrumented test runner is needed for it.
+    testImplementation(libs.junit4)
+    testImplementation(kotlin("test"))
 }
 
 mavenPublishing {
