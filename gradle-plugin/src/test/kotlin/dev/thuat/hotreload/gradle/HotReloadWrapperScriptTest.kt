@@ -106,6 +106,46 @@ class HotReloadWrapperScriptTest {
     }
 
     @Test
+    fun `app module present is baked in before the passthrough args`() {
+        val script = HotReloadWrapperScript.content(projectDir, "com.example.app", "0.1.5", appModule = ":mobile")
+        val execLine = script.lines().single { it.trimStart().startsWith("exec ") }
+        val pkg = execLine.indexOf("--package")
+        val appModuleIdx = execLine.indexOf("--app-module")
+        val passthrough = execLine.indexOf("\"\$@\"")
+        assertTrue(
+            pkg in 0 until appModuleIdx && appModuleIdx in 0 until passthrough,
+            "expected --package, then --app-module, then \"\$@\" (last one wins), got: $execLine",
+        )
+        assertTrue(execLine.contains("--app-module \":mobile\""))
+    }
+
+    @Test
+    fun `app module absent adds no --app-module flag, letting the CLI's own default apply`() {
+        val script = HotReloadWrapperScript.content(projectDir, "com.example.app", "0.1.5")
+        val execLine = script.lines().single { it.trimStart().startsWith("exec ") }
+        assertTrue(!execLine.contains("--app-module"))
+    }
+
+    @Test
+    fun `blank app module is treated the same as absent`() {
+        val script = HotReloadWrapperScript.content(projectDir, "com.example.app", "0.1.5", appModule = "")
+        val execLine = script.lines().single { it.trimStart().startsWith("exec ") }
+        assertTrue(!execLine.contains("--app-module"))
+    }
+
+    @Test
+    fun `an explicit caller --app-module still wins over the baked-in one (last occurrence wins)`() {
+        // The wrapper always appends "$@" after its own baked-in flags (see the ordering test
+        // above) -- this documents *why* that ordering is sufficient: Main.kt's arg parser folds
+        // repeated --flag pairs into a map via toMap(), which keeps the LAST occurrence of a
+        // key. A caller-passed "--app-module :tv" landing after the baked-in "--app-module
+        // :mobile" therefore overrides it, exactly like --project/--package already do.
+        val args = listOf("run", "--app-module", ":mobile", "--app-module", ":tv")
+        val resolved = args.drop(1).chunked(2).associate { (k, v) -> k.removePrefix("--") to v }
+        assertEquals(":tv", resolved["app-module"])
+    }
+
+    @Test
     fun `isOwnFile is true only for content carrying the marker`() {
         assertTrue(HotReloadWrapperScript.isOwnFile(HotReloadWrapperScript.content(projectDir, "p", "0.1.5")))
         assertEquals(false, HotReloadWrapperScript.isOwnFile("#!/bin/sh\necho hi\n"))

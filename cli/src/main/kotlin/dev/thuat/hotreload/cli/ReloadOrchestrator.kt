@@ -348,10 +348,14 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
             // or toolchain resolving to a different, unsupported JDK that preflight couldn't have
             // seen coming. Raw output is always preserved; the hint is only ever appended.
             val hint = unsupportedJvmHint(compileResult.output, readWrapperGradleVersion(config.projectDir))
-            return if (hint != null) {
-                CycleOutcome.EnvironmentError("${compileResult.output}\n\n$hint")
-            } else {
-                CycleOutcome.CompileError(compileResult.output)
+            return when {
+                hint != null -> CycleOutcome.EnvironmentError("${compileResult.output}\n\n$hint")
+                // The other environment-not-source failure this cycle can hit before ever
+                // touching the user's code: --app-module (default ":app") names a module this
+                // project doesn't have. See AppModuleHint.kt.
+                isAppModuleNotFoundFailure(compileResult.output, config.appModule) ->
+                    CycleOutcome.EnvironmentError(appModuleNotFoundHint(config.appModule, config.projectDir))
+                else -> CycleOutcome.CompileError(compileResult.output)
             }
         }
 

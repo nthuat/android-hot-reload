@@ -36,11 +36,34 @@ object HotReloadWrapperScript {
      * first of those. Uses `: "${'$'}{ANDROID_HOME:=...}"` (a POSIX no-op with a parameter-expansion
      * side effect) rather than an unconditional assignment, so a value the caller already exported
      * is never clobbered.
+     *
+     * [appModule], when non-null (see [HotReloadPlugin.findApplicationModulePaths] for how it's
+     * resolved and the tie-break rule when a project has more than one `com.android.application`
+     * module), is baked in as `--app-module` on the exec line, same rung as `--project`/
+     * `--package` -- before `"$@"`, so an explicit `--app-module` the caller passes still wins.
+     * Null (not just blank) means "couldn't resolve one" -- the flag is omitted entirely rather
+     * than baking in an empty value, and the CLI's own `:app` default (`Main.kt`) applies exactly
+     * as it did before this parameter existed.
      */
-    fun content(projectDir: File, applicationId: String, pluginVersion: String, sdkDir: File? = null): String {
+    fun content(
+        projectDir: File,
+        applicationId: String,
+        pluginVersion: String,
+        sdkDir: File? = null,
+        appModule: String? = null,
+    ): String {
         val pkg = applicationId.ifBlank { "your.app.package" }
         val sdkLines = if (sdkDir != null) {
             ": \"${'$'}{ANDROID_HOME:=${sdkDir.absolutePath}}\"\nexport ANDROID_HOME\n"
+        } else {
+            ""
+        }
+        val appModuleFlag = appModule?.takeIf { it.isNotBlank() }?.let { " --app-module \"$it\"" } ?: ""
+        // A full standalone `|`-prefixed line (with its own trailing newline) rather than text
+        // spliced mid-line, so trimMargin below still strips the margin off it like every other
+        // line -- an empty string when there's no app module just collapses to no extra line.
+        val appModuleNote = if (appModuleFlag.isNotEmpty()) {
+            "            |# Application module: $appModule (override with --app-module <path>).\n"
         } else {
             ""
         }
@@ -50,15 +73,16 @@ object HotReloadWrapperScript {
             |# Plugin version: $pluginVersion
             |#
             |# Thin wrapper around the CLI hotReloadInstallCli downloaded, with --project/--package
-            |# (and, when this plugin could resolve one, ANDROID_HOME) baked in so day-to-day use
-            |# needs no flags and no environment to export:
+            |# (and, when this plugin could resolve one, --app-module and ANDROID_HOME) baked in so
+            |# day-to-day use needs no flags and no environment to export:
             |#   ./hotreload run                       # watch mode
             |#   ./hotreload bootstrap                  # re-attach after the app restarts
             |#   ./hotreload cycle --file path/to/File.kt
-            |# Flags you pass win over the baked-in --project/--package (they come after on the
-            |# command line, and the CLI keeps the last occurrence of a repeated flag), e.g.:
+            |# Flags you pass win over the baked-in --project/--package/--app-module (they come
+            |# after on the command line, and the CLI keeps the last occurrence of a repeated
+            |# flag), e.g.:
             |#   ./hotreload run --serial emulator-5554
-            |# A baked-in ANDROID_HOME below is only set if not already exported, so a deliberate
+${appModuleNote}            |# A baked-in ANDROID_HOME below is only set if not already exported, so a deliberate
             |# override in your shell always wins.
             |#
             |# This file has machine-specific absolute paths -- add it to .gitignore.
@@ -66,7 +90,7 @@ object HotReloadWrapperScript {
             |script_dir=${'$'}(CDPATH= cd -- "${'$'}(dirname -- "${'$'}0")" && pwd)
             |${sdkLines}cmd="${'$'}1"
             |if [ "${'$'}#" -gt 0 ]; then shift; fi
-            |exec "${'$'}script_dir/build/hotreload/cli/bin/cli" "${'$'}cmd" --project "${projectDir.absolutePath}" --package "$pkg" "${'$'}@"
+            |exec "${'$'}script_dir/build/hotreload/cli/bin/cli" "${'$'}cmd" --project "${projectDir.absolutePath}" --package "$pkg"$appModuleFlag "${'$'}@"
             |
         """.trimMargin()
     }
@@ -78,7 +102,13 @@ object HotReloadWrapperScript {
      * Writes the wrapper into [projectDir], refusing to overwrite a pre-existing file that isn't
      * one of ours. Sets the executable bit like [InstallCliTask.install] does for `bin/cli`.
      */
-    fun writeTo(projectDir: File, applicationId: String, pluginVersion: String, sdkDir: File? = null): File {
+    fun writeTo(
+        projectDir: File,
+        applicationId: String,
+        pluginVersion: String,
+        sdkDir: File? = null,
+        appModule: String? = null,
+    ): File {
         val file = File(projectDir, FILE_NAME)
         if (file.isFile && !isOwnFile(file.readText())) {
             throw GradleException(
@@ -87,7 +117,7 @@ object HotReloadWrapperScript {
                     "re-run hotReloadInstallCli.",
             )
         }
-        file.writeText(content(projectDir, applicationId, pluginVersion, sdkDir))
+        file.writeText(content(projectDir, applicationId, pluginVersion, sdkDir, appModule))
         file.setExecutable(true, false)
         return file
     }

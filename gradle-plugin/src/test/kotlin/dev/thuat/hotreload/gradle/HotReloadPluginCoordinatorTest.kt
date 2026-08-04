@@ -157,6 +157,39 @@ class HotReloadPluginCoordinatorTest {
         assertFalse(app.tasks.names.contains(INSTALL_CLI_TASK_NAME))
     }
 
+    // Covers the app-module tie-break (see HotReloadPlugin.findApplicationModulePaths): a project
+    // with more than one com.android.application module -- exactly the Jetcaster shape (:mobile
+    // and :tv, no :app at all) that motivated baking --app-module into the wrapper in the first
+    // place -- must resolve to the same module every time, regardless of which order the
+    // subprojects happen to be declared/configured in.
+    @Test
+    fun `multiple application modules resolve deterministically to the alphabetically-first Gradle path`() {
+        val root = ProjectBuilder.builder().withName("root").build()
+        val tv = ProjectBuilder.builder().withName("tv").withParent(root).build()
+        val mobile = ProjectBuilder.builder().withName("mobile").withParent(root).build()
+        // Declared/built in "tv, then mobile" order -- if the resolution depended on
+        // Project.allprojects's iteration order this would pick :tv; the alphabetical tie-break
+        // must still pick :mobile regardless.
+        tv.pluginManager.apply("com.android.application")
+        mobile.pluginManager.apply("com.android.application")
+
+        assertEquals(listOf(":mobile", ":tv"), findApplicationModulePaths(root))
+    }
+
+    @Test
+    fun `a single application module resolves to just itself`() {
+        val (root, app, _) = buildMultiProject()
+        app.pluginManager.apply("com.android.application")
+
+        assertEquals(listOf(":app"), findApplicationModulePaths(root))
+    }
+
+    @Test
+    fun `no application module resolves to an empty list, not a failure`() {
+        val root = ProjectBuilder.builder().withName("root").build()
+        assertEquals(emptyList(), findApplicationModulePaths(root))
+    }
+
     @Test
     fun `applying the plugin twice to the very same project is a no-op the second time`() {
         // Sanity check underpinning the dual-apply tests above: Gradle itself refuses to apply

@@ -117,6 +117,7 @@ private fun registerInstallCliTask(project: Project) {
         // application module at all) falls back to a placeholder in the printed command.
         task.applicationId.set(project.provider { findApplicationId(root) ?: "" })
         task.androidSdkDir.set(project.provider { resolveSdkDir(root)?.absolutePath ?: "" })
+        task.applicationModules.set(project.provider { findApplicationModulePaths(root) })
     }
 }
 
@@ -128,6 +129,29 @@ private fun findApplicationId(root: Project): String? = runCatching {
         defaultConfig?.javaClass?.getMethod("getApplicationId")?.invoke(defaultConfig) as? String
     }
 }.getOrNull()
+
+/**
+ * Gradle paths (e.g. `:app`, `:mobile`) of every module with `com.android.application` applied,
+ * sorted alphabetically -- the module `hotReloadInstallCli` bakes into the wrapper as
+ * `--app-module` is `firstOrNull()` of this list (see [InstallCliTask.writeWrapper]).
+ *
+ * TIE-BREAK RULE for multiple application modules (e.g. compose-samples/Jetcaster has both
+ * `:mobile` and `:tv`): alphabetical order of the Gradle project path, first one wins.
+ * Deliberately NOT `root.allprojects`' own iteration order (declaration order in
+ * `settings.gradle(.kts)`, or subproject discovery order) -- that's an accident of how a
+ * consumer happened to list their modules, not a meaningful signal, and would make the baked-in
+ * default silently change if they ever reordered an `include(...)` call. Alphabetical is at
+ * least reproducible from the settings file alone and doesn't require guessing at "the important
+ * one". No compileOnly AGP dependency needed here (unlike [findApplicationId]/[findAgpSdkDir]):
+ * `PluginContainer.hasPlugin(String)` is a stable Gradle-core API that matches by plugin id, no
+ * AGP type resolution required.
+ */
+internal fun findApplicationModulePaths(root: Project): List<String> = runCatching {
+    root.allprojects
+        .filter { it.plugins.hasPlugin("com.android.application") }
+        .map { it.path }
+        .sorted()
+}.getOrElse { emptyList() }
 
 /** See [AndroidSdkResolution] for the priority order and why each rung falls back to the next. */
 private fun resolveSdkDir(root: Project): File? = AndroidSdkResolution.resolve(

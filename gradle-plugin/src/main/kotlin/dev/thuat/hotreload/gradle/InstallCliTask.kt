@@ -9,6 +9,7 @@ import java.util.zip.ZipInputStream
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
 import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.Internal
@@ -49,11 +50,21 @@ abstract class InstallCliTask : DefaultTask() {
     @get:Internal
     abstract val androidSdkDir: Property<String>
 
+    // Same treatment as applicationId/androidSdkDir above: doesn't affect what's downloaded, only
+    // what gets baked into the wrapper (and the printed usage line) -- see
+    // HotReloadPlugin.findApplicationModulePaths for how this is resolved and the tie-break rule
+    // for multiple application modules. Empty when the project has none (e.g. a pure library
+    // checkout, or resolution failed) -- writeWrapper then omits --app-module entirely and the
+    // CLI's own default (:app) applies, same as before this property existed.
+    @get:Internal
+    abstract val applicationModules: ListProperty<String>
+
     init {
         group = "hot reload"
         description = "Downloads the cli.zip release matching this plugin's version into build/hotreload/cli."
         applicationId.convention("")
         androidSdkDir.convention("")
+        applicationModules.convention(emptyList())
     }
 
     @TaskAction
@@ -88,7 +99,8 @@ abstract class InstallCliTask : DefaultTask() {
     private fun writeWrapper(resolvedVersion: String): File {
         val pkg = applicationId.orNull?.takeIf { it.isNotBlank() } ?: ""
         val sdkDir = androidSdkDir.orNull?.takeIf { it.isNotBlank() }?.let(::File)
-        return HotReloadWrapperScript.writeTo(projectDir.get().asFile, pkg, resolvedVersion, sdkDir)
+        val appModule = applicationModules.orNull.orEmpty().firstOrNull()
+        return HotReloadWrapperScript.writeTo(projectDir.get().asFile, pkg, resolvedVersion, sdkDir, appModule)
     }
 
     private fun download(resolvedVersion: String, targetDir: File) {
@@ -140,9 +152,24 @@ abstract class InstallCliTask : DefaultTask() {
         }
     }
 
+    // Names which application module (if any) got baked into --app-module, per the task's own
+    // "state the choice in the task's output" requirement -- so a Jetcaster-shaped project with
+    // both :mobile and :tv doesn't just silently pick one, the user sees it happen and how to
+    // override it. See HotReloadPlugin.findApplicationModulePaths for the alphabetical tie-break.
     private fun printUsage(wrapper: File) {
+        val modules = applicationModules.orNull.orEmpty()
+        val moduleNote = when {
+            modules.isEmpty() -> ""
+            modules.size == 1 ->
+                "  Application module: ${modules.first()} (baked into ${wrapper.name} as --app-module).\n"
+            else ->
+                "  Multiple application modules found (${modules.joinToString(", ")}); using " +
+                    "${modules.first()} (alphabetically first) baked into ${wrapper.name} as --app-module. " +
+                    "Pass --app-module <path> yourself to pick a different one.\n"
+        }
         logger.lifecycle(
             "hotReloadInstallCli: ready. Run ./${wrapper.name} run (bootstrap / cycle --file ... also work).\n" +
+                moduleNote +
                 "  It has machine-specific absolute paths baked in -- add '${wrapper.name}' to .gitignore.",
         )
     }
