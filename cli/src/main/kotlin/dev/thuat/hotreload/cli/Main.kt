@@ -10,6 +10,15 @@ import kotlin.system.exitProcess
 
 fun main(args: Array<String>) {
     if (args.isEmpty()) usage()
+    // Checked before anything else (no --project/--package needed): the whole point is to let a
+    // user hitting a CLI/runtime version mismatch (see ReloadOrchestrator.checkRuntimeVersion)
+    // check which CLI they actually have in one command, instead of unzipping a distribution and
+    // reading hotreload-cli-version.txt out of the jar by hand -- see docs/releasing.md's incident
+    // note on why that print statement matters enough to be its own flag.
+    if (isVersionFlag(args[0])) {
+        println(CliVersion.VERSION)
+        exitProcess(0)
+    }
     val cmd = args[0]
     val opts = args.drop(1).chunked(2).mapNotNull { pair ->
         if (pair.size == 2 && pair[0].startsWith("--")) pair[0].removePrefix("--") to pair[1] else null
@@ -78,6 +87,10 @@ internal fun resolveAgentSoDir(explicit: String?, homeEnv: String?, cwd: Path): 
 // (e.g. ~/repos/build-tools/myapp) registered zero watchers — `run` then hangs forever with no
 // indication why — and a path containing "src" (e.g. ~/src/myapp) happily registered .git/.idea
 // as "src" dirs too. Pure so it's directly unit testable without a real filesystem/WatchService.
+// Either spelling, since `--version` reads naturally next to the other `--flag` options while
+// `-v` matches the short form most CLIs accept. Pure so it's directly unit testable.
+internal fun isVersionFlag(arg: String): Boolean = arg == "--version" || arg == "-v"
+
 internal fun isWatchableDir(dir: Path, projectDir: Path): Boolean {
     if (dir == projectDir) return false
     val segments = dir.relativeTo(projectDir).map { it.toString() }
@@ -192,7 +205,7 @@ private fun defaultAdb(): String {
 
 private fun usage(): Nothing {
     println(
-        "usage: hotreload <bootstrap|cycle|run> --project <dir> --package <pkg> [--serial S] " +
+        "usage: hotreload --version | <bootstrap|cycle|run> --project <dir> --package <pkg> [--serial S] " +
             "[--file f.kt] [--adb path] [--agent-so-dir dir] [--app-module :app] " +
             "[--port N (default: derived per-package, see ReloadOrchestrator.derivePort)] " +
             "[--java-home <path> (run the build daemon on a specific JDK instead of this CLI's own)]"

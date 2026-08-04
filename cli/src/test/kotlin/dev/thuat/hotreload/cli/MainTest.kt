@@ -48,6 +48,26 @@ class MainTest {
     }
 }
 
+// --version / -v is checked before --project/--package are parsed at all (see main's first
+// branch) -- this is the pure predicate behind that branch.
+class IsVersionFlagTest {
+    @Test
+    fun `long form is recognized`() {
+        assertTrue(isVersionFlag("--version"))
+    }
+
+    @Test
+    fun `short form is recognized`() {
+        assertTrue(isVersionFlag("-v"))
+    }
+
+    @Test
+    fun `a command name is not mistaken for the version flag`() {
+        assertFalse(isVersionFlag("run"))
+        assertFalse(isVersionFlag("--verbose"))
+    }
+}
+
 // The bug this guards against: the old default resolved relative to the process's CWD, which
 // only happened to work when the CLI was launched from the tool checkout itself — the documented
 // workflow launches it from the *consumer* project dir instead, so that default silently pointed
