@@ -27,14 +27,16 @@ plugins { id("dev.thuat.hotreload") version "0.1.5" }
 ```
 
 **2. Get the CLI.** From the project you just configured — this fetches the CLI matching your
-plugin version, so the two can't drift:
+plugin version, so the two can't drift, and generates a `./hotreload` wrapper script in your
+project root with `--project`/`--package` baked in:
 
 ```bash
 ./gradlew hotReloadInstallCli
 ```
 
-It prints the exact command to run, with your project path and `applicationId` filled in.
-Prefer a global `hotreload` command usable across projects? Install it instead:
+`./hotreload` is generated (regenerated on every run) and has your machine's absolute paths baked
+in, so add it to `.gitignore`. Prefer a global `hotreload` command usable across projects instead?
+Install it separately:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nthuat/android-hot-reload/main/install.sh | sh
@@ -43,11 +45,12 @@ curl -fsSL https://raw.githubusercontent.com/nthuat/android-hot-reload/main/inst
 **3. Build, install and launch your debug build as usual**, then:
 
 ```bash
-./build/hotreload/cli/bin/cli run --project . --package your.app.package
-# or, if you used install.sh:  hotreload run --project . --package your.app.package
+./hotreload run
 ```
 
-Edit a composable, hit save. That's it.
+Edit a composable, hit save. That's it. `./hotreload bootstrap` re-attaches after the app
+restarts, `./hotreload cycle --file path/to/File.kt` reloads once — any flag you pass overrides
+the baked-in default (e.g. `./hotreload run --serial emulator-5554`).
 
 <details>
 <summary><b>What applying at the root actually does</b></summary>
@@ -97,8 +100,10 @@ now, and Gradle needs a specific-enough version to run at all — see the JDK-Gr
 table in Gradle's docs). Fix it with `export JAVA_HOME=$(/usr/libexec/java_home -v 21)` (macOS) or
 point just this tool at a different JDK with `--java-home <path>`, without touching your shell.
 
-`hotReloadInstallCli` (step 2 above) unpacks to `build/hotreload/cli/` and requires plugin
-**0.1.4+**. Re-running is a no-op once the matching version is present.
+`hotReloadInstallCli` (step 2 above) unpacks to `build/hotreload/cli/` (the raw binary is
+`./build/hotreload/cli/bin/cli`, still runnable directly with your own `--project`/`--package` if
+you'd rather skip the wrapper) and requires plugin **0.1.4+**. Re-running is a no-op once the
+matching version is present, but the `./hotreload` wrapper is regenerated every time.
 
 **Version matching matters**: the CLI and the on-device agent speak a private protocol that
 changes between releases, so keep the CLI on the same version as the plugin. The Gradle task

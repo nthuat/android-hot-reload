@@ -73,7 +73,14 @@ abstract class InstallCliTask : DefaultTask() {
                 )
             }
         }
-        printUsage(targetDir)
+        val wrapper = writeWrapper(resolvedVersion)
+        printUsage(wrapper)
+    }
+
+    /** See [HotReloadWrapperScript] for the generated content and the clobber guard. */
+    private fun writeWrapper(resolvedVersion: String): File {
+        val pkg = applicationId.orNull?.takeIf { it.isNotBlank() } ?: ""
+        return HotReloadWrapperScript.writeTo(projectDir.get().asFile, pkg, resolvedVersion)
     }
 
     private fun download(resolvedVersion: String, targetDir: File) {
@@ -125,15 +132,10 @@ abstract class InstallCliTask : DefaultTask() {
         }
     }
 
-    private fun printUsage(targetDir: File) {
-        val projectDirFile = projectDir.get().asFile
-        val cliPath = runCatching {
-            "./" + projectDirFile.toPath().relativize(File(targetDir, "bin/cli").toPath())
-        }.getOrElse { File(targetDir, "bin/cli").absolutePath }
-        val pkg = applicationId.orNull?.takeIf { it.isNotBlank() } ?: "your.app.package"
+    private fun printUsage(wrapper: File) {
         logger.lifecycle(
-            "hotReloadInstallCli: ready. Run:\n" +
-                "$cliPath run --project ${projectDirFile.absolutePath} --package $pkg",
+            "hotReloadInstallCli: ready. Run ./${wrapper.name} run (bootstrap / cycle --file ... also work).\n" +
+                "  It has machine-specific absolute paths baked in -- add '${wrapper.name}' to .gitignore.",
         )
     }
 }
