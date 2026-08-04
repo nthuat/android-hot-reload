@@ -76,7 +76,7 @@ Archive:  cli/build/distributions/cli.zip
 ```
 
 File is `cli.zip` (not `cli-0.1.6.zip`), root directory is `cli/` (not `cli-0.1.6/`), jar inside
-is still correctly versioned (`cli-0.1.6.jar`) — matches the "correct build" signature the
+is still correctly versioned (`cli-0.1.6.jar`), matching the "correct build" signature the
 incident report named.
 
 ### 3. Verifier: PASS against the published `v0.1.6` asset, FAIL against a deliberately broken zip
@@ -96,7 +96,7 @@ verify-release-asset.sh: FAIL: missing cli/agent/x86_64/libhotreload_agent.so
 ```
 
 **Fail #2** (constructed by renaming `cli/lib/cli-0.1.6.jar` to `cli/lib/cli.jar` inside a
-known-good zip — reproduces the actual `v0.1.6` incident shape):
+known-good zip, reproducing the actual `v0.1.6` incident shape):
 ```
 $ sh scripts/verify-release-asset.sh 0.1.6 incident-shaped.zip
 verify-release-asset.sh: checking local zip incident-shaped.zip against version 0.1.6
