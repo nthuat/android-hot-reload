@@ -1,9 +1,29 @@
+import org.gradle.api.tasks.Copy
 import org.gradle.jvm.application.tasks.CreateStartScripts
 
 plugins { alias(libs.plugins.kotlin.jvm); application }
 
+// Kept in lockstep with runtime/build.gradle.kts's and gradle-plugin/build.gradle.kts's `version`
+// (same release, same tag — see CliInstallSupport.releaseTag). This is the single source of truth
+// CliVersion.kt reads from at build time (see the processResources block below) to compare
+// against the on-device runtime's self-reported version — not a second hand-maintained literal
+// that could itself drift from this one.
+version = "0.1.6"
+
 application {
     mainClass.set("dev.thuat.hotreload.cli.MainKt")
+}
+
+// Bakes this build's own `version` (above) into a classpath resource read by CliVersion.kt, so
+// the CLI's notion of its own version can't drift from what this build actually is (see
+// ReloadOrchestrator.checkRuntimeVersion, which compares it against the on-device runtime's PING
+// reply before ever sending LOAD_DEX — the fix for a version-mismatched pair silently no-op'ing a
+// reload). `expand` is Gradle's built-in Copy-task templating (Groovy SimpleTemplateEngine syntax
+// in the resource file), not a new dependency.
+tasks.named<Copy>("processResources") {
+    filesMatching("hotreload-cli-version.txt") {
+        expand("version" to project.version.toString())
+    }
 }
 
 dependencies {

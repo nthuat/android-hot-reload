@@ -39,6 +39,12 @@ constexpr uint8_t kStatusError = 0x03;
 // LOAD_DEX payload record separator — matches Protocol.RECORD_SEP (0x1E, ASCII Record
 // Separator). See ParseLoadDexRecords for the framing this splits.
 constexpr char kRecordSep = '\x1E';
+// Reported in the PING reply when the on-device runtime's version can't be determined — an
+// already-published runtime jar built before ComposeInvalidator.runtimeVersion existed (an old
+// .so calling into a new runtime is impossible: the agent ships inside cli.zip, always matched to
+// this CLI build). Matches Protocol.UNKNOWN_RUNTIME_VERSION on the CLI side, which treats this as
+// "proceed with a warning", not a hard failure.
+const char kUnknownRuntimeVersion[] = "unknown";
 
 // adbd forwards `adb forward tcp:PORT localabstract:SOCKET` by connecting to the abstract
 // socket directly from its own daemon process, not from the app — so SO_PEERCRED on a
@@ -177,6 +183,42 @@ std::string NotifyRuntime(JNIEnv* env, const std::vector<std::string>& binary_na
   }
   env->DeleteGlobalRef(cls);
   return tier;
+}
+
+// Reads the on-device runtime's own version via JNI (ComposeInvalidator.runtimeVersion(),
+// see that method's doc), for the PING reply (see ServeClient's kCmdPing branch). Falls back to
+// kUnknownRuntimeVersion — never throws/crashes the agent — when: the class isn't loaded yet
+// (HotReloadInitProvider hasn't run, e.g. attach raced app startup), or the method doesn't exist
+// (a runtime published before this feature). GetStaticMethodID raises a pending NoSuchMethodError
+// on the latter rather than just returning nullptr, so it must be cleared explicitly or every
+// later JNI call on this thread would start failing.
+std::string ReadRuntimeVersion(JNIEnv* env) {
+  jclass cls = FindLoadedClass(env, "Ldev/thuat/hotreload/runtime/ComposeInvalidator;");
+  if (cls == nullptr) return kUnknownRuntimeVersion;
+  std::string version = kUnknownRuntimeVersion;
+  jmethodID method = env->GetStaticMethodID(cls, "runtimeVersion", "()Ljava/lang/String;");
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    method = nullptr;
+  }
+  if (method != nullptr) {
+    auto result = static_cast<jstring>(env->CallStaticObjectMethod(cls, method));
+    if (result != nullptr) {
+      const char* chars = env->GetStringUTFChars(result, nullptr);
+      if (chars != nullptr) {
+        version.assign(chars);
+        env->ReleaseStringUTFChars(result, chars);
+      }
+      env->DeleteLocalRef(result);
+    }
+    if (env->ExceptionCheck()) {
+      env->ExceptionDescribe();
+      env->ExceptionClear();
+      version = kUnknownRuntimeVersion;
+    }
+  }
+  env->DeleteGlobalRef(cls);
+  return version;
 }
 
 struct LoadDexRecord {
@@ -368,11 +410,16 @@ void ServeClient(int fd, JNIEnv* env) {
     std::string payload(buf.begin() + 1, buf.end());
 
     if (cmd == kCmdPing) {
-      // "pong:<pkg>" — must match Protocol.PING_REPLY_PREFIX / Protocol.pingPackageOf on the CLI
-      // side byte-for-byte. Lets the CLI verify it actually reached *this* app's agent before
-      // sending any LOAD_DEX, instead of trusting whatever a possibly-stale `adb forward`
-      // mapping happens to point at (see ReloadOrchestrator.verifyAgentIdentity).
-      SendReply(fd, kStatusOk, "pong:" + g_pkg_name);
+      // "pong:<pkg>:<runtimeVersion>" — must match Protocol.PING_REPLY_PREFIX /
+      // Protocol.pingPackageOf / Protocol.pingRuntimeVersionOf on the CLI side byte-for-byte.
+      // <pkg> lets the CLI verify it actually reached *this* app's agent before sending any
+      // LOAD_DEX, instead of trusting whatever a possibly-stale `adb forward` mapping happens to
+      // point at (see ReloadOrchestrator.verifyAgentIdentity). <runtimeVersion> (added after
+      // <pkg> to keep pingPackageOf's parsing exact-prefix-compatible with an old agent's
+      // two-field reply) lets the CLI refuse to proceed against a runtime library it doesn't
+      // match instead of silently no-op'ing a reload (see ReadRuntimeVersion's doc and the fix
+      // report this closes).
+      SendReply(fd, kStatusOk, "pong:" + g_pkg_name + ":" + ReadRuntimeVersion(env));
     } else if (cmd == kCmdLoadDex) {
       uint8_t status = kStatusError;
       std::vector<std::string> binary_names;

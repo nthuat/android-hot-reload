@@ -24,6 +24,21 @@ object ComposeInvalidator {
     fun ensureLoaded() {}
 
     /**
+     * This runtime library's own version, generated at build time from `runtime/build.gradle.kts`
+     * (`BuildConfig.HOTRELOAD_RUNTIME_VERSION` — see that file's `defaultConfig` for why it's
+     * generated rather than a literal here). Called by the JVMTI agent via JNI on every PING (see
+     * agent.cpp's `ReadRuntimeVersion`), so the CLI can refuse to proceed against a mismatched
+     * runtime instead of silently no-op'ing a reload — see [reload]'s three-tier chain, which is
+     * exactly what breaks invisibly when the CLI's LOAD_DEX wire format has moved on but this
+     * method doesn't exist yet on an older, already-published runtime jar (agent.cpp's
+     * `GetStaticMethodID` simply fails to find it, and reports "unknown" — see
+     * `Protocol.UNKNOWN_RUNTIME_VERSION` on the CLI side for how that's treated as a warning, not
+     * a hard failure).
+     */
+    @JvmStatic
+    fun runtimeVersion(): String = BuildConfig.HOTRELOAD_RUNTIME_VERSION
+
+    /**
      * Called by the JVMTI agent via JNI after RedefineClasses succeeds, once per LOAD_DEX batch,
      * with the binary names of every redefined class (e.g.
      * "dev.thuat.hotreload.sample.feature.GreetingKt") and the union of FunctionKeyMeta [keys]

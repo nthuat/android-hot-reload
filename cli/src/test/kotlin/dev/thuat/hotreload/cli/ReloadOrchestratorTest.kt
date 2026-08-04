@@ -377,6 +377,217 @@ class ReloadOrchestratorTest {
         )
     }
 
+    // --- Runtime version handshake (see ReloadOrchestrator.checkRuntimeVersion's doc for the
+    // exact-match rule and why an unknown version is a warning, not a failure) ---
+
+    @Test
+    fun `checkRuntimeVersion returns null when versions match exactly`() {
+        assertNull(checkRuntimeVersion("0.1.6", "0.1.6"))
+    }
+
+    @Test
+    fun `checkRuntimeVersion returns null for an unknown or absent runtime version`() {
+        assertNull(checkRuntimeVersion("0.1.6", null))
+        assertNull(checkRuntimeVersion("0.1.6", Protocol.UNKNOWN_RUNTIME_VERSION))
+    }
+
+    @Test
+    fun `checkRuntimeVersion returns a DeviceError naming both versions on a genuine mismatch`() {
+        val error = checkRuntimeVersion("0.1.6", "0.1.5")
+        assertTrue(error is CycleOutcome.DeviceError)
+        assertTrue((error as CycleOutcome.DeviceError).reason.contains("0.1.6"), error.reason)
+        assertTrue(error.reason.contains("0.1.5"), error.reason)
+    }
+
+    @Test
+    fun `unknownRuntimeVersionWarning is null when the runtime version is known`() {
+        assertNull(unknownRuntimeVersionWarning("0.1.6", "0.1.6"))
+    }
+
+    @Test
+    fun `unknownRuntimeVersionWarning names the CLI version when the runtime version is unknown or absent`() {
+        assertTrue(unknownRuntimeVersionWarning("0.1.6", null)!!.contains("0.1.6"))
+        assertTrue(unknownRuntimeVersionWarning("0.1.6", Protocol.UNKNOWN_RUNTIME_VERSION)!!.contains("0.1.6"))
+    }
+
+    // Fakes exactly one PING round trip with the given reply `detail` — the same shape as the
+    // "wrong package" identity test above, parameterized on the detail so it can simulate a
+    // specific runtime-version field without a real device or agent .so.
+    private fun fakePingServer(detail: String): java.net.ServerSocket {
+        val server = java.net.ServerSocket(0)
+        kotlin.concurrent.thread {
+            runCatching {
+                server.accept().use { s ->
+                    val input = java.io.DataInputStream(s.getInputStream())
+                    val len = input.readInt()
+                    val body = ByteArray(len); input.readFully(body)
+                    assertEquals(Protocol.CMD_PING, body[0])
+                    val detailBytes = detail.toByteArray()
+                    s.getOutputStream().write(
+                        java.nio.ByteBuffer.allocate(4 + 1 + detailBytes.size)
+                            .putInt(1 + detailBytes.size).put(Protocol.STATUS_OK).put(detailBytes).array()
+                    )
+                    s.getOutputStream().flush()
+                }
+            }
+        }
+        return server
+    }
+
+    // Minimal ":app" module with an (empty) debug kotlin-classes dir, just enough for
+    // allClassDirs()/ClassDiffer.snapshot to succeed so bootstrap's fast path can reach
+    // store.save() — see ModuleResolverTest for the same module-shape convention.
+    private fun withEmptyAppModule(projectDir: java.nio.file.Path) {
+        val moduleDir = projectDir.resolve("app")
+        Files.createDirectories(moduleDir.resolve("build/tmp/kotlin-classes/debug"))
+        Files.createFile(moduleDir.resolve("build.gradle.kts"))
+    }
+
+    @Test
+    fun `bootstrap proceeds with no warning when the on-device runtime version matches the CLI's`() {
+        val projectDir = tmp.newFolder("project-version-match").toPath()
+        withEmptyAppModule(projectDir)
+        val agentSoDir = tmp.newFolder("agent-so-version-match").toPath()
+        val server = fakePingServer("pong:dev.thuat.hotreload.sample:0.1.6")
+
+        val runner = SequencedRunner(
+            listOf(
+                deviceReady,                    // get-state
+                ProcessResult(0, "1234\n", ""), // pidof (isAppRunning)
+                ProcessResult(0, "", ""),       // adb forward
+            )
+        )
+        val config = ReloadConfig(
+            projectDir = projectDir, pkg = "dev.thuat.hotreload.sample", serial = null,
+            adbPath = "adb", agentSoDir = agentSoDir, localPort = server.localPort, cliVersion = "0.1.6",
+        )
+        val outcome = ReloadOrchestrator(config, runner).bootstrap()
+        server.close()
+
+        assertTrue(outcome is CycleOutcome.Reloaded)
+        assertNull((outcome as CycleOutcome.Reloaded).warning)
+        assertTrue(Files.exists(projectDir.resolve(".hotreload/baseline.txt")))
+    }
+
+    @Test
+    fun `bootstrap reports DeviceError naming both versions on a runtime mismatch, and never pushes the agent so`() {
+        val projectDir = tmp.newFolder("project-version-mismatch").toPath()
+        val agentSoDir = tmp.newFolder("agent-so-version-mismatch").toPath()
+        val server = fakePingServer("pong:dev.thuat.hotreload.sample:0.1.5")
+
+        val runner = SequencedRunner(
+            listOf(
+                deviceReady,
+                ProcessResult(0, "1234\n", ""),
+                ProcessResult(0, "", ""),
+            )
+        )
+        val config = ReloadConfig(
+            projectDir = projectDir, pkg = "dev.thuat.hotreload.sample", serial = null,
+            adbPath = "adb", agentSoDir = agentSoDir, localPort = server.localPort, cliVersion = "0.1.6",
+        )
+        val outcome = ReloadOrchestrator(config, runner).bootstrap()
+        server.close()
+
+        assertTrue(outcome is CycleOutcome.DeviceError)
+        val reason = (outcome as CycleOutcome.DeviceError).reason
+        assertTrue(reason.contains("0.1.6"), reason)
+        assertTrue(reason.contains("0.1.5"), reason)
+        assertFalse(Files.exists(projectDir.resolve(".hotreload/baseline.txt")))
+        assertEquals(
+            3, runner.calls.size,
+            "expected bootstrap to stop right after the version-mismatched ping — no agent .so push: ${runner.calls}",
+        )
+    }
+
+    @Test
+    fun `bootstrap proceeds with a warning when the on-device runtime predates the version handshake`() {
+        val projectDir = tmp.newFolder("project-version-unknown").toPath()
+        withEmptyAppModule(projectDir)
+        val agentSoDir = tmp.newFolder("agent-so-version-unknown").toPath()
+        // Old two-field "pong:<pkg>" shape — no runtime-version field at all.
+        val server = fakePingServer("pong:dev.thuat.hotreload.sample")
+
+        val runner = SequencedRunner(
+            listOf(
+                deviceReady,
+                ProcessResult(0, "1234\n", ""),
+                ProcessResult(0, "", ""),
+            )
+        )
+        val config = ReloadConfig(
+            projectDir = projectDir, pkg = "dev.thuat.hotreload.sample", serial = null,
+            adbPath = "adb", agentSoDir = agentSoDir, localPort = server.localPort, cliVersion = "0.1.6",
+        )
+        val outcome = ReloadOrchestrator(config, runner).bootstrap()
+        server.close()
+
+        assertTrue(outcome is CycleOutcome.Reloaded)
+        val warning = (outcome as CycleOutcome.Reloaded).warning
+        assertTrue(warning != null && warning.contains("0.1.6"), "expected a warning naming the CLI version, got: $warning")
+        assertTrue(Files.exists(projectDir.resolve(".hotreload/baseline.txt")))
+    }
+
+    @Test
+    fun `cycle reports DeviceError naming both versions on a runtime mismatch, and never reaches LOAD_DEX`() {
+        val projectDir = tmp.newFolder("project-cycle-version-mismatch").toPath()
+        val agentSoDir = tmp.newFolder("agent-so-cycle-version-mismatch").toPath()
+        val server = fakePingServer("pong:dev.thuat.hotreload.sample:0.1.5")
+
+        val runner = SequencedRunner(listOf(deviceReady, ProcessResult(0, "", "")))
+        val config = ReloadConfig(
+            projectDir = projectDir, pkg = "dev.thuat.hotreload.sample", serial = null,
+            adbPath = "adb", agentSoDir = agentSoDir, localPort = server.localPort, cliVersion = "0.1.6",
+        )
+        val outcome = ReloadOrchestrator(config, runner).cycle(projectDir.resolve("app/src/main/kotlin/Foo.kt"))
+        server.close()
+
+        assertTrue(outcome is CycleOutcome.DeviceError)
+        val reason = (outcome as CycleOutcome.DeviceError).reason
+        assertTrue(reason.contains("0.1.6"), reason)
+        assertTrue(reason.contains("0.1.5"), reason)
+        assertEquals(
+            2, runner.calls.size,
+            "expected cycle to stop right after the version-mismatched identity check, no compile/push/LOAD_DEX: ${runner.calls}",
+        )
+    }
+
+    @Test
+    fun `cycle proceeds past the identity check when the runtime version matches, reaching the compile stage`() {
+        val projectDir = tmp.newFolder("project-cycle-version-match").toPath()
+        val agentSoDir = tmp.newFolder("agent-so-cycle-version-match").toPath()
+        val server = fakePingServer("pong:dev.thuat.hotreload.sample:0.1.6")
+
+        val runner = SequencedRunner(listOf(deviceReady, ProcessResult(0, "", "")))
+        val config = ReloadConfig(
+            projectDir = projectDir, pkg = "dev.thuat.hotreload.sample", serial = null,
+            adbPath = "adb", agentSoDir = agentSoDir, localPort = server.localPort, cliVersion = "0.1.6",
+        )
+        // The changed file maps to no gradle module in this bare project dir, so a CompileError
+        // (rather than the DeviceError above) proves cycle() got past the version/identity gate.
+        val outcome = ReloadOrchestrator(config, runner).cycle(projectDir.resolve("app/src/main/kotlin/Foo.kt"))
+        server.close()
+
+        assertTrue(outcome is CycleOutcome.CompileError)
+    }
+
+    @Test
+    fun `cycle proceeds past the identity check when the runtime version is unknown, reaching the compile stage`() {
+        val projectDir = tmp.newFolder("project-cycle-version-unknown").toPath()
+        val agentSoDir = tmp.newFolder("agent-so-cycle-version-unknown").toPath()
+        val server = fakePingServer("pong:dev.thuat.hotreload.sample")
+
+        val runner = SequencedRunner(listOf(deviceReady, ProcessResult(0, "", "")))
+        val config = ReloadConfig(
+            projectDir = projectDir, pkg = "dev.thuat.hotreload.sample", serial = null,
+            adbPath = "adb", agentSoDir = agentSoDir, localPort = server.localPort, cliVersion = "0.1.6",
+        )
+        val outcome = ReloadOrchestrator(config, runner).cycle(projectDir.resolve("app/src/main/kotlin/Foo.kt"))
+        server.close()
+
+        assertTrue(outcome is CycleOutcome.CompileError)
+    }
+
     // Port derivation: bootstrap() and a later, separate `cycle` process must agree on the same
     // local port with no shared state between them — see derivePort's doc in
     // ReloadOrchestrator.kt for why a hash of the package name is used instead of scanning for a

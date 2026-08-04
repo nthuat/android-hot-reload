@@ -54,17 +54,46 @@ object Protocol {
     // `substringAfterLast(" | ")` reliably finds the tier regardless of whether a skipped
     // segment is present.
 
-    // A PING reply's `detail` is "pong:<pkg>" where <pkg> is the package name the agent read
-    // from its own /proc/self/cmdline (same string it uses to build its per-package abstract
-    // socket name — see ReloadOrchestrator.agentSocketName / agent.cpp's ReadOwnPackageName).
-    // Must match agent.cpp's ServeClient PING branch byte-for-byte. The CLI checks this against
-    // the package it expects (ReloadOrchestrator.verifyAgentIdentity) before ever sending
-    // LOAD_DEX, so a stale/wrong `adb forward` mapping onto some other app's agent is caught by
-    // protocol content, not just by re-issuing the forward.
+    // A PING reply's `detail` is "pong:<pkg>:<runtimeVersion>" where <pkg> is the package name
+    // the agent read from its own /proc/self/cmdline (same string it uses to build its
+    // per-package abstract socket name — see ReloadOrchestrator.agentSocketName / agent.cpp's
+    // ReadOwnPackageName), and <runtimeVersion> is the on-device runtime library's own version
+    // (see ComposeInvalidator.runtimeVersion / agent.cpp's ReadRuntimeVersion), or
+    // UNKNOWN_RUNTIME_VERSION when the agent couldn't determine it — either the runtime predates
+    // this handshake (an already-published runtime jar with no such method) or
+    // ComposeInvalidator hasn't loaded yet. Must match agent.cpp's ServeClient PING branch
+    // byte-for-byte.
+    //
+    // <pkg> can never itself contain ':' (Java/Android package identifiers are letters, digits,
+    // '_', and '.' only), so splitting on the FIRST ':' after the prefix unambiguously separates
+    // the two fields even if <runtimeVersion> contains ':' or any other character (see
+    // ProtocolTest for a version string exercising that) — <runtimeVersion> is always the last
+    // field, with no terminator, so nothing after its first character needs escaping.
+    //
+    // The CLI checks <pkg> against the package it expects (ReloadOrchestrator.verifyAgentIdentity)
+    // before ever sending LOAD_DEX, so a stale/wrong `adb forward` mapping onto some other app's
+    // agent is caught by protocol content, not just by re-issuing the forward. It checks
+    // <runtimeVersion> against its own version (ReloadOrchestrator.checkRuntimeVersion) before
+    // ever sending LOAD_DEX too — the actual fix for a newer CLI silently no-op'ing a reload
+    // against an older runtime (see the fix report).
+    //
+    // An agent built before this fix replies with the old two-field "pong:<pkg>" shape (no second
+    // ':'); pingRuntimeVersionOf returns null for that shape, which ReloadOrchestrator treats the
+    // same as an explicit UNKNOWN_RUNTIME_VERSION — this can only happen with a stale *agent*
+    // .so, which ships inside cli.zip and is always this exact CLI build, so in practice it's
+    // dead code today, kept only so an old two-field reply doesn't crash the parser.
     const val PING_REPLY_PREFIX: String = "pong:"
+    const val UNKNOWN_RUNTIME_VERSION: String = "unknown"
 
     fun pingPackageOf(detail: String): String? =
-        detail.takeIf { it.startsWith(PING_REPLY_PREFIX) }?.removePrefix(PING_REPLY_PREFIX)
+        detail.takeIf { it.startsWith(PING_REPLY_PREFIX) }
+            ?.removePrefix(PING_REPLY_PREFIX)
+            ?.substringBefore(':')
+
+    fun pingRuntimeVersionOf(detail: String): String? =
+        detail.takeIf { it.startsWith(PING_REPLY_PREFIX) }
+            ?.removePrefix(PING_REPLY_PREFIX)
+            ?.let { rest -> if (':' in rest) rest.substringAfter(':') else null }
 
     fun encodeLoadDexPayload(records: List<LoadDexEntry>): ByteArray =
         records.joinToString(RECORD_SEP.toString()) { r ->

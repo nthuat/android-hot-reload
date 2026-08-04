@@ -136,6 +136,11 @@ private fun formatPhaseTimings(phaseMillis: Map<String, Long>): String {
 private fun report(outcome: CycleOutcome) {
     when (outcome) {
         is CycleOutcome.Reloaded -> {
+            // Non-fatal heads-up (currently: on-device runtime version unknown — see
+            // ReloadOrchestrator.checkRuntimeVersion) printed ahead of the normal reload/
+            // bootstrap line, never in place of it — the outcome that carries it already
+            // succeeded.
+            outcome.warning?.let { println("⚠ $it") }
             if (outcome.classes.isEmpty() && outcome.skipped.isNotEmpty()) {
                 // Every changed class in this cycle was skipped as not-currently-loaded (e.g. a
                 // file that only touches @Preview-only lambda holders) — nothing was redefined,

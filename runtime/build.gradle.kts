@@ -13,7 +13,18 @@ android {
     // because that's the JVMTI attach floor, but the *library* is inert until the agent attaches,
     // so declaring 26 here only served to break the manifest merger for any consumer whose app
     // has a lower minSdk — Google's own JetNews sample (minSdk 23) can't even build with it.
-    defaultConfig { minSdk = 21 }
+    defaultConfig {
+        minSdk = 21
+        // Bakes this library's own published `version` (below) into a generated BuildConfig
+        // constant instead of a hand-maintained literal, so it can never drift from what the
+        // artifact actually is — see ComposeInvalidator.runtimeVersion, which the JVMTI agent
+        // reads via JNI to report this in the PING reply (agent.cpp's ReadRuntimeVersion /
+        // Protocol.pingRuntimeVersionOf). This is the mechanism the CLI compares its own version
+        // against before trusting a reload (see ReloadOrchestrator.checkRuntimeVersion) — the
+        // actual fix for "newer CLI + older runtime silently no-ops" (see the fix report).
+        buildConfigField("String", "HOTRELOAD_RUNTIME_VERSION", "\"${project.version}\"")
+    }
+    buildFeatures { buildConfig = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

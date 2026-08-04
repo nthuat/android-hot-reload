@@ -89,4 +89,61 @@ class ProtocolTest {
         assertEquals(null, Protocol.pingPackageOf(""))
         assertEquals(null, Protocol.pingPackageOf("garbage"))
     }
+
+    // PING reply detail extended to "pong:<pkg>:<runtimeVersion>" (see Protocol.PING_REPLY_PREFIX's
+    // doc) — must match agent.cpp's ServeClient kCmdPing branch (SendReply("pong:" + g_pkg_name +
+    // ":" + ReadRuntimeVersion(env))) byte-for-byte. pingPackageOf must still extract only <pkg>.
+    @Test
+    fun `pingPackageOf still extracts just the package from the extended pong reply`() {
+        assertEquals(
+            "dev.thuat.hotreload.sample",
+            Protocol.pingPackageOf("pong:dev.thuat.hotreload.sample:0.1.6"),
+        )
+    }
+
+    @Test
+    fun `pingRuntimeVersionOf extracts the runtime version from an extended pong reply`() {
+        assertEquals(
+            "0.1.6",
+            Protocol.pingRuntimeVersionOf("pong:dev.thuat.hotreload.sample:0.1.6"),
+        )
+    }
+
+    // An agent built before this fix replies with the old two-field "pong:<pkg>" shape (no
+    // version field at all) — ReloadOrchestrator must treat this the same as an explicit
+    // UNKNOWN_RUNTIME_VERSION, not crash on a missing field.
+    @Test
+    fun `pingRuntimeVersionOf returns null for the old two-field pong reply with no version`() {
+        assertEquals(null, Protocol.pingRuntimeVersionOf("pong:dev.thuat.hotreload.sample"))
+    }
+
+    @Test
+    fun `pingRuntimeVersionOf returns null for a reply that does not start with the pong colon prefix`() {
+        assertEquals(null, Protocol.pingRuntimeVersionOf("garbage"))
+        assertEquals(null, Protocol.pingRuntimeVersionOf(""))
+    }
+
+    @Test
+    fun `pingRuntimeVersionOf recognizes the explicit unknown literal`() {
+        assertEquals(
+            Protocol.UNKNOWN_RUNTIME_VERSION,
+            Protocol.pingRuntimeVersionOf("pong:dev.thuat.hotreload.sample:${Protocol.UNKNOWN_RUNTIME_VERSION}"),
+        )
+    }
+
+    // <pkg> can never contain ':' (Java/Android package identifiers are letters/digits/'_'/'.'
+    // only), so splitting on the FIRST ':' after the prefix must keep working even when
+    // <runtimeVersion> itself contains ':' or other unexpected characters — it's always the last
+    // field, with no terminator, so nothing after it needs escaping.
+    @Test
+    fun `pingRuntimeVersionOf handles a runtime version containing colons and other unusual characters`() {
+        val detail = "pong:dev.thuat.hotreload.sample:0.1.6-SNAPSHOT+build:42 (dirty) ☕"
+        assertEquals("dev.thuat.hotreload.sample", Protocol.pingPackageOf(detail))
+        assertEquals("0.1.6-SNAPSHOT+build:42 (dirty) ☕", Protocol.pingRuntimeVersionOf(detail))
+    }
+
+    @Test
+    fun `pingRuntimeVersionOf handles an empty runtime version field`() {
+        assertEquals("", Protocol.pingRuntimeVersionOf("pong:dev.thuat.hotreload.sample:"))
+    }
 }

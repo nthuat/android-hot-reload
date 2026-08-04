@@ -20,6 +20,11 @@ class ReloadConfig(
     // the CLI's own JVM (GradleCompiler.compile's default) — the fix for a JDK too new for the
     // consumer project's Gradle version (see JdkPreflight.kt) without touching the user's shell.
     val javaHome: Path? = null,
+    // This CLI build's own version, compared against the on-device runtime's self-reported
+    // version on every bootstrap()/cycle() (see checkRuntimeVersion). Defaults to the real build
+    // value (CliVersion.VERSION) but overridable so tests can simulate a specific CLI version
+    // without needing a real build artifact on the classpath.
+    val cliVersion: String = CliVersion.VERSION,
 )
 
 sealed class CycleOutcome {
@@ -40,6 +45,10 @@ sealed class CycleOutcome {
         // guesswork instead of re-deriving it from scratch each time (see F1: a redundant
         // per-class D8 split loop hid behind one 24s number until this was measured directly).
         val phaseMillis: Map<String, Long> = emptyMap(),
+        // Non-fatal, user-visible heads-up (see checkRuntimeVersion) — currently only "the
+        // on-device runtime's version is unknown, predates this handshake". Null on every
+        // ordinary reload. Main.kt's report() prints it ahead of the normal reload line.
+        val warning: String? = null,
     ) : CycleOutcome()
     data class CompileError(val output: String) : CycleOutcome()
     data class Incompatible(val reason: String) : CycleOutcome()
@@ -95,6 +104,48 @@ internal fun parseSkippedDescriptors(detail: String): List<String> {
     return if (descriptors.isEmpty()) emptyList() else descriptors.split(", ")
 }
 
+// Compares the on-device runtime's self-reported version (Protocol.pingRuntimeVersionOf's result
+// on a PING reply) against this CLI's own version. EXACT match, not a compatible range: the wire
+// protocol has already changed once mid-series (0.1.5 added Compose group keys to LOAD_DEX) with
+// no forward- or backward-compatibility shim on either side, so there is no verified "compatible
+// range" to encode — inventing one would just be a range nobody has actually tested, which is
+// worse than no range at all. Re-evaluate this rule (and this comment) if the protocol ever grows
+// a real compatibility window.
+//
+// Returns a DeviceError only on a genuine mismatch (both versions known and different) — callers
+// must run this before any compile/dex/push/LOAD_DEX work, exactly like verifyAgentIdentity's
+// package check, so a mismatched pair fails loudly up front instead of the CLI printing
+// "✓ reloaded" over an agent that silently skipped the recompose call (see the fix report: 0.1.5's
+// new LOAD_DEX signature made an older runtime's ComposeInvalidator.reload lookup fail invisibly
+// on-device). An unknown runtime version (null — no second field in the PING reply — or the
+// literal Protocol.UNKNOWN_RUNTIME_VERSION) is deliberately NOT a mismatch: hard-failing every
+// already-published runtime the moment this feature ships would make the CLI unusable against
+// anything already out there, so it's surfaced as a warning string instead and the caller
+// proceeds. Top-level and pure for direct unit testing.
+internal fun checkRuntimeVersion(cliVersion: String, runtimeVersion: String?): CycleOutcome.DeviceError? =
+    when {
+        runtimeVersion == null || runtimeVersion == Protocol.UNKNOWN_RUNTIME_VERSION -> null
+        runtimeVersion != cliVersion -> CycleOutcome.DeviceError(
+            "runtime version mismatch: this CLI is $cliVersion but the on-device runtime library " +
+                "is $runtimeVersion — align them: run './gradlew hotReloadInstallCli' in the " +
+                "consumer project, or pin the plugin version to $cliVersion " +
+                "(e.g. HOTRELOAD_VERSION=v$cliVersion with install.sh)"
+        )
+        else -> null
+    }
+
+// The user-visible warning attached to a Reloaded outcome when the on-device runtime's version is
+// unknown (see checkRuntimeVersion's doc for why that's a warning, not a failure). Null when the
+// version is known (whether it matched or checkRuntimeVersion already turned a mismatch into a
+// DeviceError). Top-level and pure for direct unit testing.
+internal fun unknownRuntimeVersionWarning(cliVersion: String, runtimeVersion: String?): String? =
+    if (runtimeVersion == null || runtimeVersion == Protocol.UNKNOWN_RUNTIME_VERSION) {
+        "on-device runtime version unknown (predates this handshake) — this CLI is $cliVersion; " +
+            "verify the plugin version matches it if reload behaves oddly"
+    } else {
+        null
+    }
+
 // `am attach-agent` hands the request off to ART rather than blocking until Agent_OnAttach has
 // actually run, so the first ping after a fresh attach can arrive before the agent is listening.
 // 10 * 300ms = 3s of slack, well under what a human would notice as "bootstrap hung".
@@ -143,9 +194,14 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         // after a second bootstrap call re-pushed the identical .so over an already-attached
         // agent. Pinging first, and returning immediately on success, means an already-running
         // agent's backing file is never touched again.
-        if (pingAgent()?.status == Protocol.STATUS_OK) {
+        pingAgent()?.takeIf { it.status == Protocol.STATUS_OK }?.let { reply ->
+            val runtimeVersion = Protocol.pingRuntimeVersionOf(reply.detail)
+            checkRuntimeVersion(config.cliVersion, runtimeVersion)?.let { return it }
             store.save(differ.snapshot(allClassDirs()))
-            return CycleOutcome.Reloaded(emptyList(), 0)
+            return CycleOutcome.Reloaded(
+                emptyList(), 0,
+                warning = unknownRuntimeVersionWarning(config.cliVersion, runtimeVersion),
+            )
         }
 
         val abi = adb.getprop("ro.product.cpu.abi")
@@ -171,8 +227,13 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         repeat(BOOTSTRAP_PING_RETRIES) { attempt ->
             val reply = pingAgent()
             if (reply?.status == Protocol.STATUS_OK) {
+                val runtimeVersion = Protocol.pingRuntimeVersionOf(reply.detail)
+                checkRuntimeVersion(config.cliVersion, runtimeVersion)?.let { return it }
                 store.save(differ.snapshot(allClassDirs()))
-                return CycleOutcome.Reloaded(emptyList(), 0)  // bootstrap ok; nothing reloaded yet
+                return CycleOutcome.Reloaded(  // bootstrap ok; nothing reloaded yet
+                    emptyList(), 0,
+                    warning = unknownRuntimeVersionWarning(config.cliVersion, runtimeVersion),
+                )
             }
             lastDetail = reply?.detail
             if (attempt < BOOTSTRAP_PING_RETRIES - 1) Thread.sleep(BOOTSTRAP_PING_RETRY_DELAY_MS)
@@ -183,19 +244,32 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
     private fun pingAgent(): Reply? =
         runCatching { AgentClient("localhost", config.localPort).use { it.ping() } }.getOrNull()
 
+    // Result of verifyAgentIdentity: `error` is non-null on any hard failure (wrong/no agent, or
+    // a genuine runtime version mismatch — see checkRuntimeVersion) and callers must bail out
+    // immediately, exactly like the old Boolean-shaped check. `warning`, only ever populated
+    // alongside a null `error`, threads the unknown-runtime-version heads-up (see
+    // unknownRuntimeVersionWarning) through to whatever CycleOutcome.Reloaded cycle() eventually
+    // builds — computed here, once, right after the one PING this function already sends, rather
+    // than re-pinging later just to read it again.
+    private data class IdentityCheck(val error: CycleOutcome.DeviceError?, val warning: String? = null)
+
     // The agent names its own package in every PING reply (see Protocol.pingPackageOf /
     // agent.cpp's g_pkg_name — the same string it already uses to build its per-package socket
-    // name). Checked here, before cycle() does any compile/dex/push work or LOAD_DEX, so a
-    // stale/wrong `adb forward` mapping is caught by protocol content, not just by the forward
-    // re-pointing above — a second line of defense against ever redefining classes in the wrong
-    // running app.
-    private fun verifyAgentIdentity(): CycleOutcome.DeviceError? {
+    // name), and now its own runtime library's version (see Protocol.pingRuntimeVersionOf).
+    // Checked here, before cycle() does any compile/dex/push work or LOAD_DEX, so a stale/wrong
+    // `adb forward` mapping OR a mismatched runtime library is caught by protocol content, not
+    // just by the forward re-pointing above — a second (and third) line of defense against ever
+    // redefining classes in the wrong running app, or against a version-skewed pair silently
+    // no-op'ing a reload (see checkRuntimeVersion's doc for that failure mode).
+    private fun verifyAgentIdentity(): IdentityCheck {
         val reply = pingAgent()
-            ?: return CycleOutcome.DeviceError(
-                "no agent responded on port ${config.localPort} for ${config.pkg} — run 'bootstrap' first"
+            ?: return IdentityCheck(
+                CycleOutcome.DeviceError(
+                    "no agent responded on port ${config.localPort} for ${config.pkg} — run 'bootstrap' first"
+                )
             )
         val actualPkg = Protocol.pingPackageOf(reply.detail)
-        return when {
+        val identityError = when {
             actualPkg == null -> CycleOutcome.DeviceError(
                 "agent ping reply did not name a package (got '${reply.detail}') — run 'bootstrap' again"
             )
@@ -207,6 +281,12 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
                 )
             else -> null
         }
+        if (identityError != null) return IdentityCheck(identityError)
+
+        val runtimeVersion = Protocol.pingRuntimeVersionOf(reply.detail)
+        val versionError = checkRuntimeVersion(config.cliVersion, runtimeVersion)
+        if (versionError != null) return IdentityCheck(versionError)
+        return IdentityCheck(error = null, warning = unknownRuntimeVersionWarning(config.cliVersion, runtimeVersion))
     }
 
     // Bounds bootstrap()/cycle() to a cheap, fast-failing check before any compile/adb-transfer
@@ -241,9 +321,11 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         adb.forward(config.localPort, agentSocketName(config.pkg)).failureOrNull("adb forward")?.let { return it }
 
         // Belt-and-braces on top of the forward fix above: verify the far end is actually this
-        // package's agent before doing any compile/dex/push work, let alone LOAD_DEX. Catches
-        // any other port/forward confusion, not just the one just closed above.
-        verifyAgentIdentity()?.let { return it }
+        // package's agent (and speaks a matching runtime version) before doing any compile/dex/
+        // push work, let alone LOAD_DEX. Catches any other port/forward confusion, not just the
+        // one just closed above.
+        val identity = verifyAgentIdentity()
+        identity.error?.let { return it }
 
         val start = System.currentTimeMillis()
         resolver.moduleOf(changedFile)
@@ -361,6 +443,7 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
                     tier = parseTier(reply.detail),
                     skipped = skipped.map { it.binaryName },
                     phaseMillis = phaseMillis,
+                    warning = identity.warning,
                 )
             }
             Protocol.STATUS_ERROR -> CycleOutcome.DeviceError(reply.detail)
