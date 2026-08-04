@@ -23,7 +23,7 @@ multi-module builds:
 
 ```kotlin
 // root build.gradle.kts
-plugins { id("dev.thuat.hotreload") version "0.1.4" }
+plugins { id("dev.thuat.hotreload") version "0.1.5" }
 ```
 
 **2. Install the CLI:**
@@ -62,7 +62,7 @@ has composables (omitting the version fails with `gradle-plugin:null`):
 
 ```kotlin
 // root build.gradle.kts
-plugins { id("dev.thuat.hotreload") version "0.1.4" apply false }
+plugins { id("dev.thuat.hotreload") version "0.1.5" apply false }
 
 // app/build.gradle.kts, feature/build.gradle.kts, … (each module with composables)
 plugins { id("dev.thuat.hotreload") }
@@ -76,7 +76,7 @@ Mixing both styles is safe — the plugin is idempotent and won't double-configu
 
 `install.sh` puts the latest release in `~/.local/share/hotreload/<version>/` and symlinks
 `~/.local/bin/hotreload`. Re-run it to upgrade. Pin a version with
-`HOTRELOAD_VERSION=v0.1.4 curl ... | sh`.
+`HOTRELOAD_VERSION=v0.1.5 curl ... | sh`.
 
 Besides `run` (watch mode), the CLI has `bootstrap` (attach once) and `cycle --file path/to/File.kt`
 (reload once) for scripting. Requires JDK 17+ on `PATH`/`JAVA_HOME`. The 17.7 MB download bundles
@@ -90,14 +90,14 @@ point just this tool at a different JDK with `--java-home <path>`, without touch
 
 **Gradle task** — `./gradlew hotReloadInstallCli` downloads the release matching this project's
 plugin version, so the CLI can't drift from the plugin, and unpacks it to `build/hotreload/cli/`.
-Requires plugin **0.1.4+**.
+Requires plugin **0.1.5+**.
 
 **Manual** — grab `cli.zip` from the [latest release](../../releases) and unzip it.
 </details>
 
 ## Status
 
-`0.1.4` — composable **body** reloads. See [Supported / unsupported changes](#supported--unsupported-changes)
+`0.1.5` — composable **body** reloads. See [Supported / unsupported changes](#supported--unsupported-changes)
 for the exact boundary.
 
 Verified end to end on an API 34 x86_64 emulator and a physical arm64 device (Samsung SM-F731B,

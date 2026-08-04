@@ -4,6 +4,21 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 ADB="${ANDROID_HOME}/platform-tools/adb"
+
+# The CLI drives Gradle 8.11.1 for the sample, which refuses JDK 24+. CI supplies a compatible
+# JDK, but a dev shell often defaults to something newer — pick a supported one rather than
+# failing the whole run on an environment detail. (The CLI itself reports this clearly since
+# 0.1.4; this just keeps the script usable without extra setup.)
+if [ -z "${JAVA_HOME:-}" ] || ! "${JAVA_HOME}/bin/java" -version 2>&1 | grep -qE '"(1\.8|9|1[0-9]|2[0-3])[.")]'; then
+  if command -v /usr/libexec/java_home >/dev/null 2>&1; then
+    for v in 21 17 23; do
+      if JH=$(/usr/libexec/java_home -v "$v" 2>/dev/null); then
+        export JAVA_HOME="$JH"; echo "e2e: using JDK $v at $JAVA_HOME"; break
+      fi
+    done
+  fi
+fi
+
 PKG="dev.thuat.hotreload.sample"
 GREETING="sample/feature/src/main/kotlin/dev/thuat/hotreload/sample/feature/Greeting.kt"
 AGENT_SO_DIR="$ROOT/agent/build/intermediates/merged_native_libs/debug/mergeDebugNativeLibs/out/lib"
