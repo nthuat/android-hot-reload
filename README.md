@@ -108,7 +108,9 @@ matching version is present, but the `./hotreload` wrapper is regenerated every 
 **Version matching matters**: the CLI and the on-device agent speak a private protocol that
 changes between releases, so keep the CLI on the same version as the plugin. The Gradle task
 guarantees this; with `install.sh`, pin explicitly via `HOTRELOAD_VERSION=v0.1.6` if you hold the
-plugin back.
+plugin back. The CLI also checks this itself: every `bootstrap`/`cycle` verifies the on-device
+runtime's own version against the CLI's, exits 3 with both versions named on a real mismatch, and
+just warns (not fails) if the runtime predates this check — align them the same way as above.
 
 **Manual** — grab `cli.zip` from the [latest release](../../releases) and unzip it.
 </details>
