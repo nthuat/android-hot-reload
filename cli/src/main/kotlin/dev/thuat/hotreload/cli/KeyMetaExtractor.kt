@@ -59,13 +59,20 @@ object KeyMetaExtractor {
     // member composable's file facade isn't the class that got redefined).
     fun keysFor(changed: ChangedClass): List<Int> {
         val own = extractKeys(changed.classFile)
-        val outer = changed.binaryName.substringBefore('$')
-        val legacyCandidates = linkedSetOf("$outer\$KeyMeta", "${outer}Kt\$KeyMeta")
-        val legacy = legacyCandidates.asSequence()
-            .map { changed.classFile.resolveSibling("${it.substringAfterLast('.')}.class") }
+        val legacy = legacyKeyMetaCandidates(changed.classFile, changed.binaryName).asSequence()
             .filter(Files::exists)
             .flatMap { extractKeys(it).asSequence() }
         return (own.asSequence() + legacy).distinct().toList()
+    }
+
+    // The `<Facade>$KeyMeta` / `<Facade>Kt$KeyMeta` sibling paths that might hold this class's
+    // Compose ~1.7 legacy keys (see the class doc). Factored out of [keysFor] so
+    // [KeySelection.keysSnapshot]'s pre-compile pass can look the same candidate paths up in a
+    // pre-built map instead of re-deriving them ad hoc.
+    fun legacyKeyMetaCandidates(classFile: Path, binaryName: String): List<Path> {
+        val outer = binaryName.substringBefore('$')
+        return linkedSetOf("$outer\$KeyMeta", "${outer}Kt\$KeyMeta")
+            .map { classFile.resolveSibling("${it.substringAfterLast('.')}.class") }
     }
 
     private fun keysFromAnnotations(annotations: List<AnnotationNode>?): List<Int> =

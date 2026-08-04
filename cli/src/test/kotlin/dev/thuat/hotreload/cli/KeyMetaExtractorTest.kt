@@ -88,4 +88,37 @@ class KeyMetaExtractorTest {
     fun `extractKeys on a nonexistent path returns empty instead of throwing`() {
         assertEquals(emptyList(), KeyMetaExtractor.extractKeys(Paths.get("does/not/exist.class")))
     }
+
+    // legacyKeyMetaCandidates factors out keysFor's own candidate derivation so
+    // KeySelection.keysSnapshot's pre-compile pass can look the same paths up in a map instead
+    // of re-deriving them — this pins that derivation directly.
+    @Test
+    fun `legacyKeyMetaCandidates derives both outer and outerKt sibling paths next to the facade`() {
+        val facade = Paths.get("/build/classes/dev/thuat/hotreload/sample/feature/MyScreen.class")
+        val candidates = KeyMetaExtractor.legacyKeyMetaCandidates(
+            facade, "dev.thuat.hotreload.sample.feature.MyScreen",
+        )
+        assertEquals(
+            listOf(
+                Paths.get("/build/classes/dev/thuat/hotreload/sample/feature/MyScreen\$KeyMeta.class"),
+                Paths.get("/build/classes/dev/thuat/hotreload/sample/feature/MyScreenKt\$KeyMeta.class"),
+            ),
+            candidates,
+        )
+    }
+
+    @Test
+    fun `legacyKeyMetaCandidates strips a nested-class suffix before deriving the outer facade`() {
+        val classFile = Paths.get("/build/classes/dev/thuat/hotreload/sample/feature/MyScreenKt\$Body\$1.class")
+        val candidates = KeyMetaExtractor.legacyKeyMetaCandidates(
+            classFile, "dev.thuat.hotreload.sample.feature.MyScreenKt\$Body\$1",
+        )
+        assertEquals(
+            listOf(
+                Paths.get("/build/classes/dev/thuat/hotreload/sample/feature/MyScreenKt\$KeyMeta.class"),
+                Paths.get("/build/classes/dev/thuat/hotreload/sample/feature/MyScreenKtKt\$KeyMeta.class"),
+            ),
+            candidates,
+        )
+    }
 }

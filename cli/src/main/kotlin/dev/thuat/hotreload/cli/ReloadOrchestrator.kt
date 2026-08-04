@@ -331,7 +331,15 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         resolver.moduleOf(changedFile)
             ?: return CycleOutcome.CompileError("cannot map $changedFile to a gradle module")
 
+        // Snapshot every class's group keys as they sit on disk RIGHT NOW, before compile()
+        // overwrites any of them — this is what's actually running on-device (see
+        // KeySelection.kt's doc). Cheap: ASM's SKIP_CODE/SKIP_DEBUG/SKIP_FRAMES mode reads
+        // structure only, not bytecode instructions.
         var t = System.currentTimeMillis()
+        val oldKeys = keysSnapshot(allClassDirs())
+        val keysSnapshotMs = System.currentTimeMillis() - t
+
+        t = System.currentTimeMillis()
         val compileResult = compiler.compile()
         val compileMs = System.currentTimeMillis() - t
         if (!compileResult.success) {
@@ -409,11 +417,18 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
             adb.runAsCopy(config.pkg, "/data/local/tmp/hotreload/$deviceName", "hotreload/$deviceName")
                 .failureOrNull("copy ${dex.fileName} into app sandbox")?.let { return it }
             val devicePath = "${adb.appDataDir(config.pkg)}/code_cache/hotreload/$deviceName"
-            // Extracted here, not batched separately: KeyMetaExtractor.keysFor reads the exact
-            // same already-compiled .class file dexClasses just split from, so this is a cheap
-            // in-memory ASM pass, not a second compile. See Protocol.RECORD_SEP's doc for what an
-            // empty result means on the device side (falls back to its own lookup, tier2, tier3).
-            val keys = KeyMetaExtractor.keysFor(changed)
+            // Union of this class's NEW keys (just-compiled bytecode) and its OLD keys (captured
+            // above, before compile() ran) — see KeySelection.kt's doc for why the old set is
+            // required: the running app's slot table still holds the old keys until an
+            // invalidation actually fires. See Protocol.RECORD_SEP's doc for what an empty
+            // result means on the device side (falls back to its own lookup, tier2, tier3).
+            val keys = resolvedKeysFor(changed, oldKeys)
+            if (System.getenv("HOTRELOAD_DEBUG_KEYS") != null) {
+                System.err.println(
+                    "DEBUG ${changed.binaryName}: old=${oldKeys[changed.classFile].orEmpty()} " +
+                        "new=${KeyMetaExtractor.keysFor(changed)} union=$keys"
+                )
+            }
             records += LoadDexEntry(changed.descriptor, devicePath, keys)
         }
         val pushMs = System.currentTimeMillis() - t
@@ -425,6 +440,7 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         val redefineMs = System.currentTimeMillis() - t
 
         val phaseMillis = linkedMapOf(
+            "keysnapshot" to keysSnapshotMs,
             "compile" to compileMs,
             "diff" to diffMs,
             "dex" to dexMs,
