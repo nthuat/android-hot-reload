@@ -131,6 +131,33 @@ class HotReloadPluginCoordinatorTest {
     }
 
     @Test
+    fun `hotReloadInstallCli is registered exactly once on the root project regardless of apply style`() {
+        val (root, app, feature) = buildMultiProject()
+        app.pluginManager.apply("com.android.application")
+        feature.pluginManager.apply("com.android.library")
+        // Coordinator apply at root, PLUS per-module apply on both app and feature (sample/'s
+        // actual style) — registerInstallCliTask must not throw "task already exists".
+        root.plugins.apply(HotReloadPlugin::class.java)
+        app.plugins.apply(HotReloadPlugin::class.java)
+        feature.plugins.apply(HotReloadPlugin::class.java)
+        evaluate(root, app, feature)
+
+        assertTrue(root.tasks.names.contains(INSTALL_CLI_TASK_NAME))
+        assertEquals(1, root.tasks.withType(InstallCliTask::class.java).size)
+    }
+
+    @Test
+    fun `hotReloadInstallCli is registered on the root project even when the plugin is only applied per-module`() {
+        val (root, app, _) = buildMultiProject()
+        app.pluginManager.apply("com.android.application")
+        app.plugins.apply(HotReloadPlugin::class.java) // no root application at all, mirrors sample/
+        evaluate(root, app)
+
+        assertTrue(root.tasks.names.contains(INSTALL_CLI_TASK_NAME))
+        assertFalse(app.tasks.names.contains(INSTALL_CLI_TASK_NAME))
+    }
+
+    @Test
     fun `applying the plugin twice to the very same project is a no-op the second time`() {
         // Sanity check underpinning the dual-apply tests above: Gradle itself refuses to apply
         // the identical plugin class twice to one project, so `apply()`'s body never runs twice
