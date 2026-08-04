@@ -65,8 +65,8 @@ class HotReloadPlugin : Plugin<Project> {
             if (derived == null) {
                 project.logger.info(
                     "hotreload: could not derive the runtime coordinate from the plugin's own " +
-                        "classpath location (${jarFile?.absolutePath ?: "not loaded from a jar"}) " +
-                        "— falling back to the built-in default '$DEFAULT_RUNTIME_COORDINATE'. " +
+                        "classpath location (${jarFile?.absolutePath ?: "not loaded from a jar"}), " +
+                        "falling back to the built-in default '$DEFAULT_RUNTIME_COORDINATE'. " +
                         "This is expected for composite builds/includeBuild, where the plugin is " +
                         "resolved from a project rather than a jar; set " +
                         "hotreload.runtimeCoordinate explicitly if this default is wrong for " +

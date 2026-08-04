@@ -351,7 +351,7 @@ std::string HandleLoadDex(JNIEnv* env, const std::string& payload, uint8_t* stat
     char* name = nullptr;
     g_jvmti->GetErrorName(err, &name);
     std::string msg = "RedefineClasses failed: " + std::string(name ? name : "?") +
-                      " (structural changes are unsupported in v1 — rebuild)";
+                      " (structural changes are unsupported in v1; rebuild)";
     if (name) g_jvmti->Deallocate(reinterpret_cast<unsigned char*>(name));
     return msg;
   }
@@ -522,7 +522,7 @@ extern "C" JNIEXPORT jint JNICALL Agent_OnAttach(JavaVM* vm, char* /*options*/, 
   if (g_started) return JNI_OK;  // am attach-agent may be issued again; server already up
   g_vm = vm;
   if (vm->GetEnv(reinterpret_cast<void**>(&g_jvmti), JVMTI_VERSION_1_2) != JNI_OK) {
-    LOGE("no jvmti env — is the app debuggable?");
+    LOGE("no jvmti env: is the app debuggable?");
     return JNI_ERR;
   }
   jvmtiCapabilities caps = {};

@@ -13,5 +13,5 @@ object CliVersion {
         CliVersion::class.java.getResourceAsStream("/hotreload-cli-version.txt")
             ?.bufferedReader()?.readText()?.trim()
             ?.takeIf { it.isNotEmpty() }
-            ?: error("hotreload-cli-version.txt missing or empty on the classpath — broken CLI build")
+            ?: error("hotreload-cli-version.txt missing or empty on the classpath: broken CLI build")
 }

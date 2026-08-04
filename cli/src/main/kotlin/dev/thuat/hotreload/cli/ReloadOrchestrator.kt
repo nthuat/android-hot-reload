@@ -127,7 +127,7 @@ internal fun checkRuntimeVersion(cliVersion: String, runtimeVersion: String?): C
         runtimeVersion == null || runtimeVersion == Protocol.UNKNOWN_RUNTIME_VERSION -> null
         runtimeVersion != cliVersion -> CycleOutcome.DeviceError(
             "runtime version mismatch: this CLI is $cliVersion but the on-device runtime library " +
-                "is $runtimeVersion — align them: run './gradlew hotReloadInstallCli' in the " +
+                "is $runtimeVersion. Align them by running './gradlew hotReloadInstallCli' in the " +
                 "consumer project, or pin the plugin version to $cliVersion " +
                 "(e.g. HOTRELOAD_VERSION=v$cliVersion with install.sh)"
         )
@@ -140,7 +140,7 @@ internal fun checkRuntimeVersion(cliVersion: String, runtimeVersion: String?): C
 // DeviceError). Top-level and pure for direct unit testing.
 internal fun unknownRuntimeVersionWarning(cliVersion: String, runtimeVersion: String?): String? =
     if (runtimeVersion == null || runtimeVersion == Protocol.UNKNOWN_RUNTIME_VERSION) {
-        "on-device runtime version unknown (predates this handshake) — this CLI is $cliVersion; " +
+        "on-device runtime version unknown (predates this handshake). This CLI is $cliVersion; " +
             "verify the plugin version matches it if reload behaves oddly"
     } else {
         null
@@ -168,7 +168,7 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         val modules = resolver.allModules()
         val dirs = modules.flatMap(resolver::classDirsOf)
         check(dirs.isNotEmpty()) {
-            "no compiled-class output found in any module — looked for:\n" +
+            "no compiled-class output found in any module. Looked for:\n" +
                 modules.flatMap(resolver::classDirCandidatesFor).joinToString("\n") { "  - $it" } +
                 "\n(checked AGP 8 + Kotlin-Gradle-Plugin, AGP 9 built-in-Kotlin, and javac layouts). " +
                 "Build the app first (./gradlew ${config.appModule}:assembleDebug), or this project's " +
@@ -180,7 +180,7 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
     fun bootstrap(): CycleOutcome {
         deviceNotReadyError()?.let { return it }
         if (!adb.isAppRunning(config.pkg)) {
-            return CycleOutcome.DeviceError("${config.pkg} is not running — launch the app first")
+            return CycleOutcome.DeviceError("${config.pkg} is not running. Launch the app first")
         }
         adb.forward(config.localPort, agentSocketName(config.pkg)).failureOrNull("adb forward")?.let { return it }
 
@@ -265,19 +265,19 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         val reply = pingAgent()
             ?: return IdentityCheck(
                 CycleOutcome.DeviceError(
-                    "no agent responded on port ${config.localPort} for ${config.pkg} — run 'bootstrap' first"
+                    "no agent responded on port ${config.localPort} for ${config.pkg}; run 'bootstrap' first"
                 )
             )
         val actualPkg = Protocol.pingPackageOf(reply.detail)
         val identityError = when {
             actualPkg == null -> CycleOutcome.DeviceError(
-                "agent ping reply did not name a package (got '${reply.detail}') — run 'bootstrap' again"
+                "agent ping reply did not name a package (got '${reply.detail}'); run 'bootstrap' again"
             )
             actualPkg != config.pkg ->
                 CycleOutcome.DeviceError(
                     "wrong app: expected ${config.pkg}'s agent but reached ${actualPkg}'s agent on port " +
-                        "${config.localPort} (stale 'adb forward' mapping from another bootstrapped app) " +
-                        "— run 'bootstrap' again for ${config.pkg}"
+                        "${config.localPort} (stale 'adb forward' mapping from another bootstrapped app); " +
+                        "run 'bootstrap' again for ${config.pkg}"
                 )
             else -> null
         }
@@ -297,7 +297,7 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         result.failureOrNull("adb get-state")?.let { return it }
         val state = result.stdout.trim()
         return if (state == "device") null else CycleOutcome.DeviceError(
-            "device not ready (state: ${state.ifEmpty { "unknown" }}) — check `adb devices`, " +
+            "device not ready (state: ${state.ifEmpty { "unknown" }}); check `adb devices`, " +
                 "and re-run `bootstrap` after restarting the app"
         )
     }
@@ -353,7 +353,7 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         val diffMs = System.currentTimeMillis() - t
         if (diff.added.isNotEmpty() || diff.removed.isNotEmpty()) {
             return CycleOutcome.Incompatible(
-                "structural change (added: ${diff.added}, removed: ${diff.removed}) — full rebuild needed"
+                "structural change (added: ${diff.added}, removed: ${diff.removed}); full rebuild needed"
             )
         }
         if (diff.changed.isEmpty()) return CycleOutcome.NoChanges
@@ -466,7 +466,7 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
 // against an offline device used to block forever with no output, no error, no timeout.
 private fun ProcessResult.failureOrNull(action: String): CycleOutcome.DeviceError? = when {
     timedOut -> CycleOutcome.DeviceError(
-        "$action timed out after ${DEFAULT_ADB_TIMEOUT_MS / 1000}s — device may be offline or " +
+        "$action timed out after ${DEFAULT_ADB_TIMEOUT_MS / 1000}s, device may be offline or " +
             "unresponsive; check `adb devices`, and re-run `bootstrap` after restarting the app"
     )
     exitCode != 0 -> CycleOutcome.DeviceError("$action failed (exit $exitCode): ${stderr.trim().ifEmpty { stdout.trim() }}")
@@ -478,7 +478,7 @@ private fun ProcessResult.failureOrNull(action: String): CycleOutcome.DeviceErro
 // agent isn't attached), so the user gets a message naming which side stalled.
 private fun agentFailureMessage(cause: Throwable): String =
     if (cause is SocketTimeoutException) {
-        "agent socket timed out after ${DEFAULT_READ_TIMEOUT_MS / 1000}s — device/app may be " +
+        "agent socket timed out after ${DEFAULT_READ_TIMEOUT_MS / 1000}s, device/app may be " +
             "unresponsive; check `adb devices`, and re-run `bootstrap` after restarting the app"
     } else {
         "agent connection failed: ${cause.message}"

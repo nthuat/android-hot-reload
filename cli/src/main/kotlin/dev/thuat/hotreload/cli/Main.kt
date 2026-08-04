@@ -50,7 +50,7 @@ fun main(args: Array<String>) {
         "run" -> {
             val boot = orchestrator.bootstrap()
             if (boot !is CycleOutcome.Reloaded) exitWith(boot)
-            println("hotreload ready — watching ${config.projectDir}")
+            println("hotreload ready: watching ${config.projectDir}")
             watchLoop(config.projectDir, orchestrator)
         }
         else -> usage()
@@ -146,12 +146,12 @@ private fun report(outcome: CycleOutcome) {
                 // file that only touches @Preview-only lambda holders) — nothing was redefined,
                 // so this is a distinct outcome from a normal reload, not a 0-class "success".
                 println(
-                    "· nothing applied — ${outcome.skipped.size} changed class(es) not currently loaded: " +
+                    "· nothing applied, ${outcome.skipped.size} changed class(es) not currently loaded: " +
                         "${summarizeSkipped(outcome.skipped)} (still running the installed APK's version " +
                         "until the next full rebuild)"
                 )
             } else {
-                val tierSuffix = outcome.tier?.let { " [$it — ${tierGuarantee[it] ?: "unknown"}]" } ?: ""
+                val tierSuffix = outcome.tier?.let { " [$it: ${tierGuarantee[it] ?: "unknown"}]" } ?: ""
                 println(
                     "✓ reloaded ${outcome.classes.size} class(es) in ${outcome.millis}ms$tierSuffix: " +
                         "${outcome.classes.joinToString()}${formatPhaseTimings(outcome.phaseMillis)}"

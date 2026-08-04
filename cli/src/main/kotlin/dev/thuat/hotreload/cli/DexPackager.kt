@@ -110,7 +110,7 @@ class DexPackager(
             if (missing.isNotEmpty()) {
                 error(
                     "class(es) ${missing.joinToString { it.binaryName }} not found in $appModule's merged " +
-                        "dex output (mergeProjectDexDebug/mergeLibDexDebug) — run a full rebuild + bootstrap"
+                        "dex output (mergeProjectDexDebug/mergeLibDexDebug), run a full rebuild + bootstrap"
                 )
             }
             return results
