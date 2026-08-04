@@ -24,11 +24,13 @@ object ComposeInvalidator {
     fun ensureLoaded() {}
 
     /**
-     * Called by the JVMTI agent via JNI after RedefineClasses succeeds, once per
-     * redefined class, with its binary name (e.g. "dev.thuat.hotreload.sample.feature.GreetingKt").
-     * Returns which tier actually fired ("tier1"/"tier2"/"tier3"), or "tier-timeout" if the
-     * main-thread work didn't finish within [REPLY_TIMEOUT_SECONDS] — so the CLI can surface
-     * the real state guarantee to the user instead of just "reloaded".
+     * Called by the JVMTI agent via JNI after RedefineClasses succeeds, once per LOAD_DEX batch,
+     * with the binary names of every redefined class (e.g.
+     * "dev.thuat.hotreload.sample.feature.GreetingKt") and the union of FunctionKeyMeta [keys]
+     * the CLI already extracted host-side for them (may be empty — see below). Returns which
+     * tier actually fired ("tier1"/"tier2"/"tier3"), or "tier-timeout" if the main-thread work
+     * didn't finish within [REPLY_TIMEOUT_SECONDS] — so the CLI can surface the real state
+     * guarantee to the user instead of just "reloaded".
      *
      * The invalidation work itself must run on the main thread (Compose's runtime hooks and
      * `Activity.recreate()` both require it), but this method is called from the agent's own
@@ -38,20 +40,25 @@ object ComposeInvalidator {
      *
      * Three-tier fallback chain, tier taken always logged at [TAG]:
      *  1. Group-key invalidation (Live Edit's mechanism) — re-executes only the affected
-     *     recompose scopes; preserves `remember` state.
+     *     recompose scopes; preserves `remember` state. Uses [keys] as supplied by the CLI when
+     *     present; only falls back to this class's own on-device [keysForClass] lookup when the
+     *     CLI sent none (older CLI, or a case its host-side bytecode extraction missed) — see
+     *     [keysForClass]'s doc for why that on-device lookup alone is no longer sufficient on
+     *     Compose 1.11+, where `@FunctionKeyMeta` is BINARY-retention and applied directly to
+     *     compiled methods instead of a reflectable holder class.
      *  2. Whole-composition rebuild via `HotReloader` reflection — loses `remember` state.
      *  3. `Activity.recreate()` — last resort when Compose's runtime hooks are unreachable.
      */
     @JvmStatic
-    fun reload(binaryNames: Array<String>): String {
+    fun reload(binaryNames: Array<String>, keys: IntArray): String {
         val latch = CountDownLatch(1)
         var tier = "tier-timeout"
         mainHandler.post {
             try {
-                val keys = binaryNames.flatMap(::keysForClass)
+                val resolvedKeys = keys.toList().ifEmpty { binaryNames.flatMap(::keysForClass) }
                 tier = when {
-                    keys.isNotEmpty() && invalidateGroupsWithKeys(keys) -> {
-                        Log.i(TAG, "tier1: group-key invalidation, keys=$keys")
+                    resolvedKeys.isNotEmpty() && invalidateGroupsWithKeys(resolvedKeys) -> {
+                        Log.i(TAG, "tier1: group-key invalidation, keys=$resolvedKeys")
                         "tier1"
                     }
                     invalidateViaHotReloader() -> {
@@ -71,11 +78,22 @@ object ComposeInvalidator {
         return tier
     }
 
-    // Compose compiler option `generateFunctionKeyMetaClasses=true` (enabled by the gradle
-    // plugin on debug builds) emits a sibling `<FileFacade>$KeyMeta` class per *source file*,
-    // carrying one repeatable @FunctionKeyMeta(key, startOffset, endOffset) per composable
-    // function or nested composable lambda declared anywhere in that file — including
-    // composables that are members of a class, not just top-level ones.
+    // FALLBACK ONLY as of the host-side extraction fix (see [reload]'s doc): this on-device
+    // reflective lookup is what [reload] uses when the CLI's `keys` array is empty. It still
+    // works for Compose ~1.7, whose compiler option `generateFunctionKeyMetaClasses=true`
+    // (enabled by the gradle plugin on debug builds) emits a sibling `<FileFacade>$KeyMeta`
+    // class per *source file*, carrying one repeatable @FunctionKeyMeta(key, startOffset,
+    // endOffset) per composable function or nested composable lambda declared anywhere in that
+    // file — including composables that are members of a class, not just top-level ones — as a
+    // RUNTIME-retention annotation on that holder CLASS, reflectable here.
+    //
+    // It does NOT work on Compose 1.11+: that compiler stopped emitting holder classes and
+    // instead annotates each composable's own compiled method directly, but `@FunctionKeyMeta`
+    // is declared `@Retention(AnnotationRetention.BINARY)` (verified via javap on
+    // androidx.compose.runtime 1.11.4's own FunctionKeyMeta.class — see the fix report), so on
+    // that version it lands in RuntimeInvisibleAnnotations and no amount of on-device reflection
+    // can ever read it — only the CLI, reading the compiled .class file directly
+    // (KeyMetaExtractor), can. This function is kept for the fallback case, not deleted.
     //
     // The redefined binary name doesn't always tell you the file facade directly:
     //  (a) A top-level composable's own class or a nested composable lambda (e.g.

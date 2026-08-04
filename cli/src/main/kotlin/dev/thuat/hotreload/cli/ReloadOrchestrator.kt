@@ -287,7 +287,7 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         val dexMs = System.currentTimeMillis() - t
 
         t = System.currentTimeMillis()
-        val records = mutableListOf<Pair<String, String>>()
+        val records = mutableListOf<LoadDexEntry>()
         // Push every dex file first, THEN send one LOAD_DEX for the whole batch (see
         // agentSocketName / Protocol.RECORD_SEP docs): the agent redefines all of them in one
         // JVMTI RedefineClasses(n, defs) call, which JVMTI applies atomically. Sending N
@@ -312,7 +312,12 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
             adb.runAsCopy(config.pkg, "/data/local/tmp/hotreload/$deviceName", "hotreload/$deviceName")
                 .failureOrNull("copy ${dex.fileName} into app sandbox")?.let { return it }
             val devicePath = "${adb.appDataDir(config.pkg)}/code_cache/hotreload/$deviceName"
-            records += changed.descriptor to devicePath
+            // Extracted here, not batched separately: KeyMetaExtractor.keysFor reads the exact
+            // same already-compiled .class file dexClasses just split from, so this is a cheap
+            // in-memory ASM pass, not a second compile. See Protocol.RECORD_SEP's doc for what an
+            // empty result means on the device side (falls back to its own lookup, tier2, tier3).
+            val keys = KeyMetaExtractor.keysFor(changed)
+            records += LoadDexEntry(changed.descriptor, devicePath, keys)
         }
         val pushMs = System.currentTimeMillis() - t
 
