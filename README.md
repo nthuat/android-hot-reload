@@ -21,19 +21,57 @@ on Android rather than desktop JVM.
 
 ## Demo
 
-<video src="https://github.com/nthuat/android-hot-reload/raw/main/docs/demo.mp4" controls muted playsinline width="900"></video>
-
-[Watch the demo](docs/demo.mp4) (1m52s) if the player above doesn't load.
+![Two composable edits reloading live on a physical device, with the list keeping its scroll position](docs/demo.gif)
 
 [compose-samples/Jetcaster](https://github.com/android/compose-samples/tree/main/Jetcaster) on a
 physical device, scrolled two screens deep into a podcast. Each edit changes a composable body and
-is saved normally; the list keeps its scroll position across every one of them.
+is saved normally; the list keeps its scroll position across every one of them. The full session,
+five edits plus the rejected structural change, is in [docs/demo.mp4](docs/demo.mp4) (1m52s).
 
 Timings are whatever the run produced, uncut. The first reload is the slowest (~10s) because
 Gradle is still cold; the rest land in 3-5s. On a large Hilt/KSP project like this one, expect
 3-6s warm and ~25-30s for the very first edit after a cold Gradle daemon. Smaller files reload
 faster than big ones: Kotlin recompiles a whole file for a one-character change, so a 300-line
 file beats a 950-line one.
+
+## How it works
+
+```mermaid
+---
+config:
+  look: handDrawn
+  theme: neutral
+---
+flowchart TB
+    subgraph host["💻 Your machine"]
+        direction LR
+        E["Editor<br/><i>save</i>"] --> W["CLI watcher"] --> G["Gradle<br/><i>compile + dex</i>"] --> D["Diff<br/><i>vs. baseline</i>"]
+    end
+
+    subgraph device["📱 Device"]
+        direction LR
+        A["JVMTI agent"] --> R{"ART<br/>RedefineClasses"}
+        R -->|ok| RT["Runtime lib<br/><i>invalidate group keys</i>"] --> UI["✅ UI updated<br/><b>state preserved</b>"]
+        R -->|shape<br/>changed| REJ["❌ exit 2<br/><i>app untouched</i>"]
+    end
+
+    D -->|adb push| A
+
+    style UI fill:#d4edda,stroke:#28a745
+    style REJ fill:#f8d7da,stroke:#dc3545
+    style host fill:#f6f8fa,stroke:#d0d7de
+    style device fill:#fff8f0,stroke:#d0d7de
+```
+
+The Gradle plugin's only job is setup: it injects the runtime library into your debug build and
+turns on the Compose compiler's function-key metadata. Everything above happens per save, in the
+CLI and on the device.
+
+Two details do the heavy lifting. Changed classes are extracted from AGP's **already-merged** dex
+rather than dexed in isolation: a standalone `d8` run mints different synthetic-lambda names
+than the installed APK has, which ART rejects as a deleted method. And the recompose step targets
+**group keys** rather than rebuilding the composition, which is why `remember` state outside the
+edited file survives.
 
 ## Quickstart
 
@@ -229,6 +267,7 @@ distinct "nothing applied" line instead of a reload line (still exit 0: nothing 
 changed either).
 </details>
 
+<a id="reload-tiers"></a>
 <details>
 <summary><b>Reload tiers</b></summary>
 
@@ -263,45 +302,6 @@ output), `push` (adb push + run-as copy), `redefine` (the agent round trip). For
 Always on, no flag needed: a slow cycle is diagnosable straight from its normal output instead
 of needing to be re-measured after the fact.
 </details>
-
-## How it works
-
-```mermaid
----
-config:
-  look: handDrawn
-  theme: neutral
----
-flowchart TB
-    subgraph host["💻 Your machine"]
-        direction LR
-        E["Editor<br/><i>save</i>"] --> W["CLI watcher"] --> G["Gradle<br/><i>compile + dex</i>"] --> D["Diff<br/><i>vs. baseline</i>"]
-    end
-
-    subgraph device["📱 Device"]
-        direction LR
-        A["JVMTI agent"] --> R{"ART<br/>RedefineClasses"}
-        R -->|ok| RT["Runtime lib<br/><i>invalidate group keys</i>"] --> UI["✅ UI updated<br/><b>state preserved</b>"]
-        R -->|shape<br/>changed| REJ["❌ exit 2<br/><i>app untouched</i>"]
-    end
-
-    D -->|adb push| A
-
-    style UI fill:#d4edda,stroke:#28a745
-    style REJ fill:#f8d7da,stroke:#dc3545
-    style host fill:#f6f8fa,stroke:#d0d7de
-    style device fill:#fff8f0,stroke:#d0d7de
-```
-
-The Gradle plugin's only job is setup: it injects the runtime library into your debug build and
-turns on the Compose compiler's function-key metadata. Everything above happens per save, in the
-CLI and on the device.
-
-Two details do the heavy lifting. Changed classes are extracted from AGP's **already-merged** dex
-rather than dexed in isolation: a standalone `d8` run mints different synthetic-lambda names
-than the installed APK has, which ART rejects as a deleted method. And the recompose step targets
-**group keys** rather than rebuilding the composition, which is why `remember` state outside the
-edited file survives.
 
 ## Requirements
 
