@@ -400,6 +400,20 @@ class ReloadOrchestratorTest {
     }
 
     @Test
+    fun `checkRuntimeVersion tells the user to reinstall the app, the only thing that fixes it`() {
+        // The runtime library is compiled INTO the APK, so the on-device version only changes when
+        // the app is rebuilt and reinstalled. The original message instead suggested
+        // `hotReloadInstallCli` (which only downloads the CLI, moving the versions further apart)
+        // and "pin the plugin version to X" (already done -- that is what put the CLI ahead of the
+        // device). Reproduced live on Jetcaster: following the advice verbatim changed nothing.
+        val reason = (checkRuntimeVersion("0.1.8", "0.1.7") as CycleOutcome.DeviceError).reason
+        assertTrue(reason.contains("reinstall"), reason)
+        assertTrue(reason.contains("assembleDebug"), reason)
+        assertTrue(reason.contains("adb install"), reason)
+        assertFalse(reason.contains("hotReloadInstallCli"), reason)
+    }
+
+    @Test
     fun `unknownRuntimeVersionWarning is null when the runtime version is known`() {
         assertNull(unknownRuntimeVersionWarning("0.1.6", "0.1.6"))
     }

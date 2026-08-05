@@ -128,11 +128,21 @@ internal fun parseSkippedDescriptors(detail: String): List<String> {
 internal fun checkRuntimeVersion(cliVersion: String, runtimeVersion: String?): CycleOutcome.DeviceError? =
     when {
         runtimeVersion == null || runtimeVersion == Protocol.UNKNOWN_RUNTIME_VERSION -> null
+        // The remedy names reinstalling the APK, because that is the only thing that actually
+        // moves the on-device number: the runtime library is compiled INTO the app, so it changes
+        // when the app is rebuilt and reinstalled and at no other time. The previous message
+        // suggested './gradlew hotReloadInstallCli' and "pin the plugin version to X" -- neither
+        // works, and the first actively makes it worse: hotReloadInstallCli only re-downloads the
+        // CLI, pushing the two versions further apart. Reproduced live while upgrading Jetcaster
+        // 0.1.7 -> 0.1.8, where following the advice verbatim changed nothing and the same error
+        // came straight back.
         runtimeVersion != cliVersion -> CycleOutcome.DeviceError(
             "runtime version mismatch: this CLI is $cliVersion but the on-device runtime library " +
-                "is $runtimeVersion. Align them by running './gradlew hotReloadInstallCli' in the " +
-                "consumer project, or pin the plugin version to $cliVersion " +
-                "(e.g. HOTRELOAD_VERSION=v$cliVersion with install.sh)"
+                "is $runtimeVersion. The runtime ships inside your APK, so rebuild and reinstall " +
+                "the app to move it: './gradlew :<app-module>:assembleDebug' then " +
+                "'adb install -r <path/to/app-debug.apk>', then relaunch the app. If your project " +
+                "still pins the plugin to $runtimeVersion, bump it to $cliVersion first, since the " +
+                "plugin is what supplies the runtime."
         )
         else -> null
     }
