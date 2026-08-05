@@ -124,6 +124,11 @@ number. The CLI checks this up front and tells you what to do:
 
 `--java-home` points only this tool at a different JDK, without touching your shell.
 
+**Configuration cache.** The CLI builds with Gradle's configuration cache on by default, which
+cuts repeat-cycle compile time substantially on larger projects; it falls back automatically for a
+project whose plugins turn out to be incompatible with it, or disable it yourself with
+`--no-configuration-cache`.
+
 **Progress output.** `cycle`/`run` print a live "compiling…", "dexing…", "pushing…" line as each
 phase starts, so a slow reload is not a silent terminal. On a real terminal, each phase
 overwrites the last in place; piped or redirected output (CI, `| grep`, the e2e script) gets

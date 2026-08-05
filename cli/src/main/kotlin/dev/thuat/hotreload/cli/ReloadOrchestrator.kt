@@ -20,6 +20,9 @@ class ReloadConfig(
     // the CLI's own JVM (GradleCompiler.compile's default) — the fix for a JDK too new for the
     // consumer project's Gradle version (see JdkPreflight.kt) without touching the user's shell.
     val javaHome: Path? = null,
+    // --no-configuration-cache (Main.kt) flips this false. See GradleCompiler for what the flag
+    // does and its per-project fallback when a build turns out to be incompatible with it.
+    val useConfigurationCache: Boolean = true,
     // This CLI build's own version, compared against the on-device runtime's self-reported
     // version on every bootstrap()/cycle() (see checkRuntimeVersion). Defaults to the real build
     // value (CliVersion.VERSION) but overridable so tests can simulate a specific CLI version
@@ -170,7 +173,7 @@ class ReloadOrchestrator(
     private val resolver = ModuleResolver(config.projectDir)
     private val differ = ClassDiffer()
     private val store = BaselineStore(config.projectDir.resolve(".hotreload/baseline.txt"))
-    private val compiler = GradleCompiler(config.projectDir, config.appModule, config.javaHome)
+    private val compiler = GradleCompiler(config.projectDir, config.appModule, config.javaHome, config.useConfigurationCache)
     private val dexer = DexPackager(config.projectDir, config.appModule)
 
     // Modules with no class output are skipped, not fatal — com.android.test (baseline-profile,

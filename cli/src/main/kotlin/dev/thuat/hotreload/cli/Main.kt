@@ -28,7 +28,13 @@ fun main(args: Array<String>) {
         args.contains("--progress") -> true
         else -> null
     }
-    val opts = args.drop(1).filterNot { it == "--progress" || it == "--no-progress" }
+    // Also a boolean flag, not "--flag value" — pulled out alongside --progress/--no-progress for
+    // the same reason (see above). Escape hatch for a project whose plugins are known ahead of
+    // time to be configuration-cache incompatible (see GradleCompiler); otherwise the CLI finds
+    // that out itself via one fallback retry per process.
+    val noConfigurationCache = args.contains("--no-configuration-cache")
+    val opts = args.drop(1)
+        .filterNot { it == "--progress" || it == "--no-progress" || it == "--no-configuration-cache" }
         .chunked(2).mapNotNull { pair ->
             if (pair.size == 2 && pair[0].startsWith("--")) pair[0].removePrefix("--") to pair[1] else null
         }.toMap()
@@ -48,6 +54,7 @@ fun main(args: Array<String>) {
         appModule = opts["app-module"] ?: ":app",
         localPort = opts["port"]?.let { it.toIntOrNull() ?: fail("--port must be an integer, got '$it'") } ?: derivePort(pkg),
         javaHome = opts["java-home"]?.let { Paths.get(it) },
+        useConfigurationCache = !noConfigurationCache,
     )
 
     // Before any device or compile work (bootstrap/cycle/run all reach here first): the Tooling
@@ -234,7 +241,8 @@ private fun usage(): Nothing {
             "[--file f.kt] [--adb path] [--agent-so-dir dir] [--app-module :app] " +
             "[--port N (default: derived per-package, see ReloadOrchestrator.derivePort)] " +
             "[--java-home <path> (run the build daemon on a specific JDK instead of this CLI's own)] " +
-            "[--progress | --no-progress (default: on iff stdout is a terminal)]"
+            "[--progress | --no-progress (default: on iff stdout is a terminal)] " +
+            "[--no-configuration-cache (disable Gradle's configuration cache, on by default)]"
     )
     exitProcess(64)
 }
