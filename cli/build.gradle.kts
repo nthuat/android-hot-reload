@@ -10,7 +10,7 @@ plugins { alias(libs.plugins.kotlin.jvm); application }
 // CliVersion.kt reads from at build time (see the processResources block below) to compare
 // against the on-device runtime's self-reported version — not a second hand-maintained literal
 // that could itself drift from this one.
-version = "0.1.7"
+version = "0.1.8"
 
 application {
     mainClass.set("dev.thuat.hotreload.cli.MainKt")
@@ -71,9 +71,9 @@ tasks.named<CreateStartScripts>("startScripts") {
 // place, and InstallCliTask.unzip unpacks entry names verbatim, expecting the top-level entry to
 // land exactly at its outputDir. Without this, the application plugin's default naming bakes
 // `version` into both the archive file name and the root directory inside it (e.g.
-// "cli-0.1.7.zip" containing "cli-0.1.7/") -- which is exactly what shipped a broken v0.1.7
+// "cli-0.1.8.zip" containing "cli-0.1.8/") -- which is exactly what shipped a broken v0.1.6
 // release: a stale cli.zip (no version) sat in the GitHub Release next to a correctly-built-but-
-// never-uploaded cli-0.1.7.zip, and nothing caught the mismatch. distributionBaseName pins the
+// never-uploaded cli-0.1.6.zip, and nothing caught the mismatch. distributionBaseName pins the
 // root directory name; archiveVersion.set("") on each archive task drops the version suffix from
 // both the file name and, since it shares the same base-name+version convention, the root
 // directory too (confirmed by inspecting the built zip's own entries, not just the file name).
