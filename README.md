@@ -16,6 +16,22 @@ recompose only the affected scopes, the same group-key mechanism Android Studio'
 uses. Unlike Live Edit it runs from any editor, and unlike JetBrains' Compose Hot Reload it works
 on Android rather than desktop JVM.
 
+## Demo
+
+<video src="https://github.com/nthuat/android-hot-reload/raw/main/docs/demo.mp4" controls muted playsinline width="900"></video>
+
+[Watch the demo](docs/demo.mp4) (1m52s) if the player above doesn't load.
+
+[compose-samples/Jetcaster](https://github.com/android/compose-samples/tree/main/Jetcaster) on a
+physical device, scrolled two screens deep into a podcast. Each edit changes a composable body and
+is saved normally; the list keeps its scroll position across every one of them.
+
+Timings are whatever the run produced, uncut. The first reload is the slowest (~10s) because
+Gradle is still cold; the rest land in 3-5s. On a large Hilt/KSP project like this one, expect
+3-6s warm and ~25-30s for the very first edit after a cold Gradle daemon. Smaller files reload
+faster than big ones: Kotlin recompiles a whole file for a one-character change, so a 300-line
+file beats a 950-line one.
+
 ## Quickstart
 
 **1.** Add one line to your root `build.gradle.kts`:
