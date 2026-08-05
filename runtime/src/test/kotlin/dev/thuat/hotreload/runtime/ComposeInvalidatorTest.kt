@@ -1,5 +1,6 @@
 package dev.thuat.hotreload.runtime
 
+import java.lang.reflect.InvocationTargetException
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -72,6 +73,30 @@ class ComposeInvalidatorTest {
             onFailure = { _, _ -> error("should not be called") },
         )
         assertTrue(result)
+    }
+
+    @Test
+    fun `unwraps the reflection wrapper so the real failure is what gets reported`() {
+        // Every invalidateGroupsWithKey call goes through Method.invoke, which wraps whatever the
+        // Compose runtime threw in an InvocationTargetException whose own message is null. Logging
+        // the wrapper therefore printed "InvocationTargetException: null" and threw away the only
+        // thing that explains the failure -- which is exactly why the ComposableSingletons tier2
+        // fallback stayed undiagnosed. Unwrap so the cause is what reaches the log.
+        val real = IllegalStateException("the actual Compose failure")
+        assertEquals(real, unwrapReflectionFailure(InvocationTargetException(real)))
+    }
+
+    @Test
+    fun `leaves a non-reflection exception alone`() {
+        val direct = IllegalArgumentException("thrown directly")
+        assertEquals(direct, unwrapReflectionFailure(direct))
+    }
+
+    @Test
+    fun `keeps the wrapper when it has no cause`() {
+        // Nothing useful to unwrap to; reporting the wrapper beats reporting null.
+        val empty = InvocationTargetException(null)
+        assertEquals(empty, unwrapReflectionFailure(empty))
     }
 
     @Test

@@ -4,6 +4,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.compose.runtime.internal.FunctionKeyMeta
+import java.lang.reflect.InvocationTargetException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -40,6 +41,19 @@ internal fun invalidateAll(keys: List<Int>, invalidate: (Int) -> Unit, onFailure
     }
     return failures == 0
 }
+
+// Every hook this file reaches into Compose with is called through `Method.invoke`, which wraps
+// anything the target throws in an [InvocationTargetException] whose OWN message is null. Logging
+// that wrapper printed the useless "InvocationTargetException: null" and discarded the only thing
+// that identifies the failure, which is why the ComposableSingletons batch failures (see
+// [invalidateAll]) stayed undiagnosed across several reload cycles: the tier report was honest
+// that something threw, but never said what. Unwrap to the cause so the log names the real
+// exception; keep the wrapper itself when there is no cause to unwrap to, since reporting it
+// still beats reporting nothing.
+//
+// Free function, no Android imports, for the same plain-JVM-unit-test reason as [invalidateAll].
+internal fun unwrapReflectionFailure(t: Throwable): Throwable =
+    if (t is InvocationTargetException) t.cause ?: t else t
 
 object ComposeInvalidator {
     private const val TAG = "HotReload"
@@ -190,7 +204,12 @@ object ComposeInvalidator {
     private fun invalidateGroupsWithKeys(keys: List<Int>): Boolean {
         val invalidate = resolveInvalidateGroupsWithKey() ?: return false
         return invalidateAll(keys, invalidate) { key, t ->
-            Log.w(TAG, "invalidateGroupsWithKey($key) failed: ${t.javaClass.simpleName}: ${t.message}")
+            // Pass the throwable itself, not just its text: this is the batch failure that
+            // silently costs the user their `remember` state by demoting the reload to tier2, and
+            // the stack trace is what says whether Compose threw from inside the composition
+            // traversal or somewhere else entirely. See [unwrapReflectionFailure].
+            val real = unwrapReflectionFailure(t)
+            Log.w(TAG, "invalidateGroupsWithKey($key) failed: ${real.javaClass.name}: ${real.message}", real)
         }
     }
 
@@ -235,7 +254,11 @@ object ComposeInvalidator {
         Log.i(TAG, "Recomposed via HotReloader")
         true
     } catch (t: Throwable) {
-        Log.w(TAG, "HotReloader reflection failed: ${t.javaClass.simpleName}: ${t.message}")
+        // Unwrapped for the same reason as the tier1 path: when tier2 fails too the reload drops
+        // all the way to Activity.recreate(), and "InvocationTargetException: null" explains none
+        // of it. See [unwrapReflectionFailure].
+        val real = unwrapReflectionFailure(t)
+        Log.w(TAG, "HotReloader reflection failed: ${real.javaClass.name}: ${real.message}", real)
         false
     }
 
