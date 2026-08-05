@@ -29,6 +29,28 @@ class ConfigurationCacheTest {
     }
 
     @Test
+    fun `recognizes an entry that fails to deserialize`() {
+        // Verbatim from the CI e2e run that went red on the sample project: Gradle stored the
+        // entry, then failed reloading it because Kotlin's build-FUS build service could not be
+        // deserialized. Nothing in this output matches the "problems found" shape, so before this
+        // case the CLI surfaced a configuration-cache defect as a plain compile error and never
+        // retried. See isConfigurationCacheFailure's doc.
+        val output = """
+            * What went wrong:
+            Error while reading task graph
+            > Exception while loading configuration for :feature: Could not load the value of field
+              `__buildFusService__` of task `:feature:compileDebugKotlin` of type
+              `org.jetbrains.kotlin.gradle.tasks.KotlinCompile`.
+        """.trimIndent()
+        assertTrue(isConfigurationCacheFailure(output))
+    }
+
+    @Test
+    fun `recognizes a failure storing the task graph`() {
+        assertTrue(isConfigurationCacheFailure("Error while saving task graph\n> boom"))
+    }
+
+    @Test
     fun `does not flag an ordinary compile error`() {
         val output = """
             * What went wrong:
