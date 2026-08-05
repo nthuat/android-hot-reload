@@ -152,7 +152,20 @@ internal fun unknownRuntimeVersionWarning(cliVersion: String, runtimeVersion: St
 private const val BOOTSTRAP_PING_RETRIES = 10
 private const val BOOTSTRAP_PING_RETRY_DELAY_MS = 300L
 
-class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner = RealProcessRunner()) {
+// Fired by cycle() right as each phase begins, named exactly like phaseMillis's keys
+// (keysnapshot, compile, diff, dex, push, redefine — see formatPhaseTimings in Main.kt) so a
+// live progress line and the final per-phase summary never drift apart. `classCount` is only
+// meaningful for "dex" (how many classes are about to be dexed); null otherwise. Pure reporting
+// hook, no-op by default — ReloadOrchestrator itself never prints (see ProgressReporter in
+// Main.kt for the presentation layer that consumes this), and this callback does not change
+// cycle()'s return value or phaseMillis contract.
+typealias PhaseListener = (phase: String, classCount: Int?) -> Unit
+
+class ReloadOrchestrator(
+    private val config: ReloadConfig,
+    runner: ProcessRunner = RealProcessRunner(),
+    private val onPhase: PhaseListener = { _, _ -> },
+) {
     private val adb = Adb(config.adbPath, config.serial, runner)
     private val resolver = ModuleResolver(config.projectDir)
     private val differ = ClassDiffer()
@@ -335,10 +348,12 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         // overwrites any of them — this is what's actually running on-device (see
         // KeySelection.kt's doc). Cheap: ASM's SKIP_CODE/SKIP_DEBUG/SKIP_FRAMES mode reads
         // structure only, not bytecode instructions.
+        onPhase("keysnapshot", null)
         var t = System.currentTimeMillis()
         val oldKeys = keysSnapshot(allClassDirs())
         val keysSnapshotMs = System.currentTimeMillis() - t
 
+        onPhase("compile", null)
         t = System.currentTimeMillis()
         val compileResult = compiler.compile()
         val compileMs = System.currentTimeMillis() - t
@@ -359,6 +374,7 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
             }
         }
 
+        onPhase("diff", null)
         t = System.currentTimeMillis()
         val current = differ.snapshot(allClassDirs())
         val diff = differ.diff(store.load(), current)
@@ -391,10 +407,12 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         // redundant full-bucket D8 splits per cycle). A class dexer.dexClasses can't find throws
         // (uncaught here, same as the old per-class dexClass()'s behavior) — matches today's
         // "missing class surfaces as an error" contract rather than a soft DeviceError.
+        onPhase("dex", toRedefine.size)
         t = System.currentTimeMillis()
         val dexed = dexer.dexClasses(toRedefine, dexDir)
         val dexMs = System.currentTimeMillis() - t
 
+        onPhase("push", null)
         t = System.currentTimeMillis()
         val records = mutableListOf<LoadDexEntry>()
         // Push every dex file first, THEN send one LOAD_DEX for the whole batch (see
@@ -437,6 +455,7 @@ class ReloadOrchestrator(private val config: ReloadConfig, runner: ProcessRunner
         }
         val pushMs = System.currentTimeMillis() - t
 
+        onPhase("redefine", null)
         t = System.currentTimeMillis()
         val reply = runCatching {
             AgentClient("localhost", config.localPort).use { it.loadDex(records) }

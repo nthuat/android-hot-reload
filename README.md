@@ -124,6 +124,13 @@ number. The CLI checks this up front and tells you what to do:
 
 `--java-home` points only this tool at a different JDK, without touching your shell.
 
+**Progress output.** `cycle`/`run` print a live "compiling…", "dexing…", "pushing…" line as each
+phase starts, so a slow reload is not a silent terminal. On a real terminal, each phase
+overwrites the last in place; piped or redirected output (CI, `| grep`, the e2e script) gets
+plain lines instead, so logs stay greppable. Auto-detected from whether stdout is a terminal;
+override with `--progress` or `--no-progress`. The final `reloaded`/`compile error`/etc. line is
+unaffected either way.
+
 **Version matching.** The CLI and the on-device runtime speak a private protocol that changes
 between releases, so keep them on the same version. `hotReloadInstallCli` guarantees it; with
 `install.sh`, pin via `HOTRELOAD_VERSION`. The CLI verifies this itself on every

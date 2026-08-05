@@ -20,9 +20,18 @@ fun main(args: Array<String>) {
         exitProcess(0)
     }
     val cmd = args[0]
-    val opts = args.drop(1).chunked(2).mapNotNull { pair ->
-        if (pair.size == 2 && pair[0].startsWith("--")) pair[0].removePrefix("--") to pair[1] else null
-    }.toMap()
+    // Boolean flags, not "--flag value" pairs like everything else here, so they're pulled out
+    // before the chunked(2) pairing below (which would otherwise treat the next token as this
+    // flag's value and misalign every option after it).
+    val progressOverride = when {
+        args.contains("--no-progress") -> false
+        args.contains("--progress") -> true
+        else -> null
+    }
+    val opts = args.drop(1).filterNot { it == "--progress" || it == "--no-progress" }
+        .chunked(2).mapNotNull { pair ->
+            if (pair.size == 2 && pair[0].startsWith("--")) pair[0].removePrefix("--") to pair[1] else null
+        }.toMap()
 
     val projectDir = Paths.get(opts["project"] ?: fail("--project required")).toAbsolutePath().normalize()
     val pkg = opts["package"] ?: fail("--package required")
@@ -48,19 +57,26 @@ fun main(args: Array<String>) {
     // ceiling logic and where each number comes from.
     jdkPreflightCheck(projectDir, config.javaHome)?.let { exitWith(it) }
 
-    val orchestrator = ReloadOrchestrator(config)
+    // System.console() is null whenever stdout (or stdin) isn't a real terminal -- piped,
+    // redirected, `$(...)` capture, CI -- which is exactly when cursor-control bytes would
+    // corrupt a log or a grep, including e2e/run-e2e.sh's capture of a cycle's stdout. See
+    // Progress.kt's doc for the full rationale and the --progress/--no-progress override.
+    val progress = ProgressReporter(interactive = progressOverride ?: (System.console() != null))
+    val orchestrator = ReloadOrchestrator(config, onPhase = progress::phase)
 
     when (cmd) {
         "bootstrap" -> exitWith(orchestrator.bootstrap())
         "cycle" -> {
             val file = Paths.get(opts["file"] ?: fail("--file required"))
-            exitWith(orchestrator.cycle(file))
+            val outcome = orchestrator.cycle(file)
+            progress.clear()
+            exitWith(outcome)
         }
         "run" -> {
             val boot = orchestrator.bootstrap()
             if (boot !is CycleOutcome.Reloaded) exitWith(boot)
             println("hotreload ready: watching ${config.projectDir}")
-            watchLoop(config.projectDir, orchestrator)
+            watchLoop(config.projectDir, orchestrator, progress)
         }
         else -> usage()
     }
@@ -99,7 +115,7 @@ internal fun isWatchableDir(dir: Path, projectDir: Path): Boolean {
         segments.any { it == "src" }
 }
 
-private fun watchLoop(projectDir: Path, orchestrator: ReloadOrchestrator): Nothing {
+private fun watchLoop(projectDir: Path, orchestrator: ReloadOrchestrator, progress: ProgressReporter): Nothing {
     val watcher = FileSystems.getDefault().newWatchService()
     Files.walk(projectDir).use { stream ->
         stream.filter { Files.isDirectory(it) && isWatchableDir(it, projectDir) }
@@ -113,7 +129,9 @@ private fun watchLoop(projectDir: Path, orchestrator: ReloadOrchestrator): Nothi
         key.reset()
         if (changedKt.isEmpty()) continue
         Thread.sleep(100)  // debounce editor write bursts
-        report(orchestrator.cycle(changedKt.first()))
+        val outcome = orchestrator.cycle(changedKt.first())
+        progress.clear()
+        report(outcome)
     }
 }
 
@@ -140,10 +158,21 @@ private fun summarizeSkipped(skipped: List<String>): String {
 // flag, so a slow cycle is diagnosable without having to know to ask for it (see F1: a 24s
 // cycle looked like one opaque number until this was measured phase-by-phase). Empty for
 // bootstrap's synthetic Reloaded(0ms, phaseMillis = emptyMap()) result, which prints nothing.
-private fun formatPhaseTimings(phaseMillis: Map<String, Long>): String {
+// Internal (not private) so ProgressTest can pin its output directly.
+internal fun formatPhaseTimings(phaseMillis: Map<String, Long>): String {
     if (phaseMillis.isEmpty()) return ""
     val parts = phaseMillis.entries.joinToString(" · ") { (phase, ms) -> "$phase %.1fs".format(ms / 1000.0) }
     return " ($parts)"
+}
+
+// The one line this whole feature must never change (see the CLI progress spec: it's asserted
+// verbatim by e2e/run-e2e.sh and shown in the README). Pulled out of report() as a pure function,
+// byte-for-byte the same expression report() printed before progress output existed, so
+// ProgressTest can pin it independently of anything progress rendering does.
+internal fun reloadedLine(outcome: CycleOutcome.Reloaded): String {
+    val tierSuffix = outcome.tier?.let { " [$it: ${tierGuarantee[it] ?: "unknown"}]" } ?: ""
+    return "✓ reloaded ${outcome.classes.size} class(es) in ${outcome.millis}ms$tierSuffix: " +
+        "${outcome.classes.joinToString()}${formatPhaseTimings(outcome.phaseMillis)}"
 }
 
 private fun report(outcome: CycleOutcome) {
@@ -164,11 +193,7 @@ private fun report(outcome: CycleOutcome) {
                         "until the next full rebuild)"
                 )
             } else {
-                val tierSuffix = outcome.tier?.let { " [$it: ${tierGuarantee[it] ?: "unknown"}]" } ?: ""
-                println(
-                    "✓ reloaded ${outcome.classes.size} class(es) in ${outcome.millis}ms$tierSuffix: " +
-                        "${outcome.classes.joinToString()}${formatPhaseTimings(outcome.phaseMillis)}"
-                )
+                println(reloadedLine(outcome))
                 if (outcome.skipped.isNotEmpty()) {
                     println(
                         "  ⚠ skipped ${outcome.skipped.size} not-yet-loaded class(es), using the installed APK's " +
@@ -208,7 +233,8 @@ private fun usage(): Nothing {
         "usage: hotreload --version | <bootstrap|cycle|run> --project <dir> --package <pkg> [--serial S] " +
             "[--file f.kt] [--adb path] [--agent-so-dir dir] [--app-module :app] " +
             "[--port N (default: derived per-package, see ReloadOrchestrator.derivePort)] " +
-            "[--java-home <path> (run the build daemon on a specific JDK instead of this CLI's own)]"
+            "[--java-home <path> (run the build daemon on a specific JDK instead of this CLI's own)] " +
+            "[--progress | --no-progress (default: on iff stdout is a terminal)]"
     )
     exitProcess(64)
 }
