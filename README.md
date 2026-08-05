@@ -11,10 +11,29 @@ running app updates in place: no reinstall, no activity restart, `remember` stat
   (compile 0.8s · diff 0.0s · dex 0.7s · push 0.4s · redefine 0.1s)
 ```
 
+That figure is a small single-module app. A large multi-module project with Hilt/KSP lands in
+3-6s warm; see [Demo](#demo) for real numbers on one.
+
 It works by redefining classes in the running process with a JVMTI agent, then asking Compose to
 recompose only the affected scopes, the same group-key mechanism Android Studio's Live Edit
 uses. Unlike Live Edit it runs from any editor, and unlike JetBrains' Compose Hot Reload it works
 on Android rather than desktop JVM.
+
+## Demo
+
+<video src="https://github.com/nthuat/android-hot-reload/raw/main/docs/demo.mp4" controls muted playsinline width="900"></video>
+
+[Watch the demo](docs/demo.mp4) (1m52s) if the player above doesn't load.
+
+[compose-samples/Jetcaster](https://github.com/android/compose-samples/tree/main/Jetcaster) on a
+physical device, scrolled two screens deep into a podcast. Each edit changes a composable body and
+is saved normally; the list keeps its scroll position across every one of them.
+
+Timings are whatever the run produced, uncut. The first reload is the slowest (~10s) because
+Gradle is still cold; the rest land in 3-5s. On a large Hilt/KSP project like this one, expect
+3-6s warm and ~25-30s for the very first edit after a cold Gradle daemon. Smaller files reload
+faster than big ones: Kotlin recompiles a whole file for a one-character change, so a 300-line
+file beats a 950-line one.
 
 ## Quickstart
 
@@ -183,6 +202,13 @@ than ending up half-swapped.
 **`remember` state** survives a reload everywhere except inside the edited file itself, whose
 scopes re-execute fresh against the new bytecode. This matches Live Edit. If some state must
 survive edits to its own file, hoist it to a `ViewModel` or the `Activity`.
+
+**Side effects in the edited file re-run**, which is the same rule seen from the other end and
+worth stating plainly because it surprises people. Re-executing a scope also re-runs its
+`LaunchedEffect`/`DisposableEffect`, so anything they drive restarts: in-progress media playback
+returns to the start, network calls fire again, animations reset. Observed on Jetcaster, where
+editing the player screen while audio was playing reset playback to `00:00` even though the
+reload correctly reported tier 1. Editing a *different* file leaves those effects untouched.
 
 <details>
 <summary><b>Not-yet-loaded classes (e.g. `@Preview` lambda holders)</b></summary>
