@@ -70,15 +70,39 @@ internal fun findApplicationModules(projectDir: Path): List<String> {
         .map { it.groupValues[1] }
         .distinct()
         .toList()
-    return modulePaths.filter { hasApplicationPlugin(projectDir, it) }.sorted()
+    val accessors = catalogApplicationAccessors(projectDir)
+    return modulePaths.filter { hasApplicationPlugin(projectDir, it, accessors) }.sorted()
 }
 
-private fun hasApplicationPlugin(projectDir: Path, modulePath: String): Boolean {
+private fun hasApplicationPlugin(projectDir: Path, modulePath: String, accessors: List<String>): Boolean {
     val moduleDir = projectDir.resolve(modulePath.removePrefix(":").replace(':', '/'))
     val buildText = listOf("build.gradle.kts", "build.gradle")
         .map { moduleDir.resolve(it) }
         .firstOrNull { Files.exists(it) }
         ?.let { Files.readString(it) }
         ?: return false
-    return buildText.contains("com.android.application")
+    return buildText.contains("com.android.application") || accessors.any { buildText.contains(it) }
+}
+
+// The literal plugin id is only half of how real projects declare it. compose-samples/Jetcaster --
+// the exact project that motivated this whole file -- writes `alias(libs.plugins.android.application)`
+// in every module, so the id itself appears nowhere but `gradle/libs.versions.toml` and the scan
+// above found zero application modules, leaving the CLI with nothing better to say than "run
+// `./gradlew projects` yourself". Map each `[plugins]` entry declaring the application id back to
+// the accessor a build file would reference it by: TOML separators (`-`, `_`) become dots in
+// Gradle's generated accessors, so `android-application` is used as `libs.plugins.android.application`.
+//
+// ponytail: only the conventional `gradle/libs.versions.toml` is read, not catalogs renamed or
+// added via `versionCatalogs {}` in settings. Widen if a real project turns up needing it -- this
+// is a hint message, and the fallback text is still correct, just less helpful.
+private fun catalogApplicationAccessors(projectDir: Path): List<String> {
+    val toml = projectDir.resolve("gradle/libs.versions.toml")
+    if (!Files.exists(toml)) return emptyList()
+    val pluginsSection = Files.readString(toml)
+        .substringAfter("[plugins]", "")
+        .substringBefore("\n[")
+    return Regex("""(?m)^\s*([\w.\-]+)\s*=.*\bid\s*=\s*["']com\.android\.application["']""")
+        .findAll(pluginsSection)
+        .map { "libs.plugins." + it.groupValues[1].replace('-', '.').replace('_', '.') }
+        .toList()
 }
