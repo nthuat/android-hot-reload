@@ -85,9 +85,17 @@ HR="$ROOT/cli/build/install/cli/bin/cli"
 echo "== golden path: edit composable body, cycle, assert new text + preserved state =="
 sed -i.bak 's/Hello, \$name!/Reloaded, \$name!/' "$GREETING" && rm -f "$GREETING.bak"
 "$ADB" logcat -c
+# Capture combined output so the tier assertions below can grep it, but always echo it before
+# deciding pass/fail: the CLI reports errors on stdout, so failing straight out of the command
+# substitution discards the very diagnostic that explains the failure (a CI run failed with
+# nothing but "cycle exited 1" for exactly this reason).
+set +e
 CYCLE_OUT=$("$HR" cycle --project "$ROOT/sample" --package "$PKG" --file "$ROOT/$GREETING" \
-  --agent-so-dir "$AGENT_SO_DIR") || fail "cycle exited $?"
+  --agent-so-dir "$AGENT_SO_DIR" 2>&1)
+CYCLE_CODE=$?
+set -e
 echo "$CYCLE_OUT"
+[ "$CYCLE_CODE" -eq 0 ] || fail "cycle exited $CYCLE_CODE"
 sleep 2
 ui_contains "Reloaded, World!" || fail "reloaded text not visible"
 ui_contains "Count: 2" || fail "counter state lost after reload"
