@@ -16,6 +16,21 @@ package dev.thuat.hotreload.cli
 // a normal build failure and must be surfaced unchanged, never silently retried — see the
 // feature's spec: "if you cannot confidently classify a failure... treat it as a normal build
 // failure."
+// The second shape is an entry that fails to serialize or deserialize, which produces no
+// "problems" report at all. Observed for real: a CI e2e run went red because Gradle stored the
+// entry and then failed reloading it to execute the build --
+//
+//   Error while reading task graph
+//   > Exception while loading configuration for :feature: Could not load the value of field
+//     `__buildFusService__` of task `:feature:compileDebugKotlin` of type `KotlinCompile`.
+//
+// a known Kotlin-plugin/configuration-cache interaction. The "reading task graph" / "saving task
+// graph" halves of that message live in gradle-core-serialization-codecs-8.11.1.jar (Gradle
+// renders them as "Error while " + the phrase), i.e. they come from the configuration cache's own
+// serialization layer and cannot appear in a Kotlin or Java compile error -- which is what makes
+// them safe to match on without re-flagging ordinary build failures.
 internal fun isConfigurationCacheFailure(output: String): Boolean =
     output.contains("Configuration cache problems found in this build") ||
-        output.contains("ConfigurationCacheProblemsException")
+        output.contains("ConfigurationCacheProblemsException") ||
+        output.contains("reading task graph") ||
+        output.contains("saving task graph")
