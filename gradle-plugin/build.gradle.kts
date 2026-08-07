@@ -2,14 +2,28 @@ plugins {
     alias(libs.plugins.kotlin.jvm)
     `java-gradle-plugin`
     alias(libs.plugins.vanniktech.maven.publish)
+    // Publishes to the Gradle Plugin Portal (./gradlew :gradle-plugin:publishPlugins), so
+    // consumers can resolve the plugin by id with no repository setup at all -- the Portal is in
+    // Gradle's default pluginManagement repositories, Maven Central is not. Central publishing is
+    // unaffected and still happens through mavenPublishing below; the two coexist deliberately,
+    // since :runtime is a plain library that only Central can serve.
+    alias(libs.plugins.gradle.plugin.publish)
 }
 group = "dev.thuat"
 version = "0.1.8"
 gradlePlugin {
+    // Required by the Portal (it rejects a submission without them) and unused by Central.
+    website.set("https://github.com/nthuat/android-hot-reload")
+    vcsUrl.set("https://github.com/nthuat/android-hot-reload.git")
     plugins {
         create("hotreload") {
             id = "dev.thuat.hotreload"
             implementationClass = "dev.thuat.hotreload.gradle.HotReloadPlugin"
+            displayName = "Android Hot Reload"
+            description = "Hot reload for Jetpack Compose on real Android devices: edit a " +
+                "composable, save, and the running app updates in place with `remember` state " +
+                "preserved. No reinstall, no activity restart, works from any editor."
+            tags.set(listOf("android", "compose", "hot-reload", "live-edit", "jetpack-compose"))
         }
     }
 }
