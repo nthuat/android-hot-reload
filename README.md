@@ -78,7 +78,7 @@ edited file survives.
 **1.** Add one line to your root `build.gradle.kts`:
 
 ```kotlin
-plugins { id("dev.thuat.hotreload") version "0.1.8" }
+plugins { id("dev.thuat.hotreload") version "0.1.9" }
 ```
 
 **2.** Get the CLI:
@@ -122,7 +122,7 @@ curl -fsSL https://raw.githubusercontent.com/nthuat/android-hot-reload/main/inst
 ```
 
 It installs to `~/.local/share/hotreload/<version>/` and symlinks `~/.local/bin/hotreload`.
-Re-run it to upgrade; pin with `HOTRELOAD_VERSION=v0.1.8`.
+Re-run it to upgrade; pin with `HOTRELOAD_VERSION=v0.1.9`.
 
 Note this fetches the *latest* release, so it can drift from your plugin version. The CLI checks
 the on-device runtime version and refuses to run on a mismatch rather than failing silently, but
@@ -151,7 +151,7 @@ has composables (omitting the version fails with `gradle-plugin:null`):
 
 ```kotlin
 // root build.gradle.kts
-plugins { id("dev.thuat.hotreload") version "0.1.8" apply false }
+plugins { id("dev.thuat.hotreload") version "0.1.9" apply false }
 
 // app/build.gradle.kts, feature/build.gradle.kts, … (each module with composables)
 plugins { id("dev.thuat.hotreload") }
@@ -204,7 +204,7 @@ failure) if the runtime predates the check.
 
 ## Status
 
-`0.1.8`: composable **body** reloads. See [Supported / unsupported changes](#supported--unsupported-changes)
+`0.1.9`: composable **body** reloads. See [Supported / unsupported changes](#supported--unsupported-changes)
 for the exact boundary.
 
 **Verified against:**

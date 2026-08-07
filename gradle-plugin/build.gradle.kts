@@ -10,7 +10,7 @@ plugins {
     alias(libs.plugins.gradle.plugin.publish)
 }
 group = "dev.thuat"
-version = "0.1.8"
+version = "0.1.9"
 gradlePlugin {
     // Required by the Portal (it rejects a submission without them) and unused by Central.
     website.set("https://github.com/nthuat/android-hot-reload")
