@@ -163,11 +163,43 @@ for now since wiring an automatic gate around an already-published asset is a bi
 question (what happens on failure? un-publish? open an issue?) than this fix covers, run the two
 commands above by hand until that's decided.
 
-## Future step: Gradle Plugin Portal
+## Gradle Plugin Portal
 
-Publishing `dev.thuat.hotreload` to the [Gradle Plugin Portal](https://plugins.gradle.org) (so
-consumers can drop the `mavenCentral()`/`gradlePluginPortal()` plugin-marker dance entirely and
-just use `plugins { id("dev.thuat.hotreload") version "X.Y.Z" }` with zero extra repository setup)
-is explicitly **out of scope** for this pass: it needs a separate Plugin Portal account and API
-key, unrelated to the Central Portal credentials above. Revisit once Central publishing is
-confirmed working end to end.
+Publishing `dev.thuat.hotreload` to the [Gradle Plugin Portal](https://plugins.gradle.org) is what
+lets consumers resolve the plugin by id with **no repository configuration at all** — the Portal is
+in Gradle's default `pluginManagement` repositories, Maven Central is not. `:gradle-plugin` applies
+`com.gradle.plugin-publish` for this. Central publishing is unchanged and still runs through
+`mavenPublishing`; the two coexist, since `:runtime` is a plain library only Central can serve.
+
+### One-time setup
+
+1. Create an account at [plugins.gradle.org](https://plugins.gradle.org/user/register), then
+   generate an API key under **your profile → API Keys**.
+2. Put the pair in `~/.gradle/gradle.properties` (never commit them):
+   ```properties
+   gradle.publish.key=<key>
+   gradle.publish.secret=<secret>
+   ```
+3. The plugin id's namespace has to be verified before the first publish. `dev.thuat` is already
+   proven for Central via the `thuat.dev` DNS TXT record, but the Portal runs its **own** namespace
+   check — expect a one-time manual approval on the first submission.
+
+### Publishing
+
+Run after the Central publish for the same version, so the two never disagree about what `X.Y.Z`
+contains:
+
+```bash
+export JAVA_HOME=$(/usr/libexec/java_home -v 21)
+./gradlew :gradle-plugin:publishPlugins
+```
+
+Add `--validate-only` first if you want the Portal to check the submission without publishing it.
+Unlike Central, the Portal has no manual "Publish" gate: a successful run is live, and versions are
+immutable, so a mistake needs a new version rather than a fix in place.
+
+### After publishing
+
+Once it resolves from the Portal, the README quickstart can drop the `pluginManagement`
+repositories block entirely — that block exists only because Central isn't a default plugin
+repository. Leave it documented for anyone pinning an older version.
